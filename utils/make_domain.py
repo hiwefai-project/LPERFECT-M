@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse  # Parse command-line arguments for the CLI.
 from dataclasses import dataclass  # Provide a simple data container for grid metadata.
+from datetime import datetime, timezone  # Timestamp domain creation for metadata.
 import importlib.util  # Detect optional dependencies at runtime.
 from typing import Iterable, Optional  # Define type hints for optional iterables.
 
@@ -133,6 +134,27 @@ def _interp_da(da: xr.DataArray, coords: dict[str, np.ndarray], method: str) -> 
     return da.interp(coords, method=method)
 
 
+def _pick_fill_value(da: xr.DataArray, default: float | int) -> float | int:
+    for key in ("_FillValue", "missing_value"):
+        if key in da.attrs:
+            return da.attrs[key]
+    return default
+
+
+def _coord_attrs(name: str, src_attrs: dict) -> dict:
+    attrs = dict(src_attrs)
+    lname = name.lower()
+    if "lat" in lname:
+        attrs.setdefault("description", "Latitude")
+        attrs.setdefault("units", "degrees_north")
+        attrs.setdefault("long_name", "latitude")
+    if "lon" in lname:
+        attrs.setdefault("description", "Longitude")
+        attrs.setdefault("units", "degrees_east")
+        attrs.setdefault("long_name", "longitude")
+    return attrs
+
+
 def _load_var(path: str, var_name: str, x_name: str, y_name: str) -> tuple[xr.DataArray, xr.Dataset]:
     raster_exts = (".tif", ".tiff", ".geotiff", ".gtiff")  # Supported raster file extensions.
     # Branch based on file type to load raster or NetCDF inputs.
@@ -231,6 +253,7 @@ def build_domain(
         progress.update(1)
 
         progress.set_description("Preparing D8")
+        d8_da = None
         if d8_path:
             d8_da, d8_ds = _load_var(d8_path, d8_var, x_name=x_name, y_name=y_name)
             d8_da = _apply_bbox(d8_da, _grid_from_da(d8_da, x_name, y_name), bbox)
@@ -242,6 +265,7 @@ def build_domain(
         progress.update(1)
 
         progress.set_description("Preparing CN")
+        cn_da = None
         if cn_path:
             cn_da, cn_ds = _load_var(cn_path, cn_var, x_name=x_name, y_name=y_name)
             cn_da = _apply_bbox(cn_da, _grid_from_da(cn_da, x_name, y_name), bbox)
@@ -253,6 +277,7 @@ def build_domain(
         progress.update(1)
 
         channel_mask = None  # Default to no channel mask if none provided.
+        mask_da = None
         if mask_path:
             progress.set_description("Preparing channel mask")
             mask_da, mask_ds = _load_var(mask_path, mask_var, x_name=x_name, y_name=y_name)
@@ -263,13 +288,31 @@ def build_domain(
             progress.update(1)
 
         progress.set_description("Assembling dataset")
+        x_coord = xr.DataArray(
+            grid.x,
+            dims=(x_name,),
+            attrs=_coord_attrs(x_name, dem_da[x_name].attrs),
+        )
+        y_coord = xr.DataArray(
+            grid.y,
+            dims=(y_name,),
+            attrs=_coord_attrs(y_name, dem_da[y_name].attrs),
+        )
+        fill_dem = _pick_fill_value(dem_da, np.nan)
+        fill_d8 = None
+        fill_cn = None
+        fill_mask = None
         ds_out = xr.Dataset()  # Start with an empty dataset.
         ds_out = ds_out.assign_coords(
             {
-                x_name: xr.DataArray(grid.x, dims=(x_name,)),
-                y_name: xr.DataArray(grid.y, dims=(y_name,)),
+                x_name: x_coord,
+                y_name: y_coord,
             }
         )
+        fill_d8 = _pick_fill_value(d8_da if d8_path else dem_da, -9999)
+        fill_cn = _pick_fill_value(cn_da if cn_path else dem_da, -9999.0)
+        if mask_da is not None:
+            fill_mask = _pick_fill_value(mask_da, 0)
         progress.update(1)
 
         progress.set_description("Writing variables")
@@ -281,6 +324,7 @@ def build_domain(
                 "standard_name": dem_attrs.get("standard_name", "surface_altitude"),
                 "long_name": dem_attrs.get("long_name", "digital_elevation_model"),
                 "units": dem_attrs.get("units", "m"),
+                "_FillValue": fill_dem,
             },
         )
 
@@ -292,6 +336,7 @@ def build_domain(
                 "flag_values": "1 2 4 8 16 32 64 128",
                 "flag_meanings": "E SE S SW W NW N NE",
                 "comment": "ESRI D8 encoding (see LPERFECT model.encoding).",
+                "_FillValue": int(fill_d8),
             },
         )
 
@@ -303,6 +348,7 @@ def build_domain(
                 "units": "1",
                 "valid_min": 0.0,
                 "valid_max": 100.0,
+                "_FillValue": float(fill_cn),
             },
         )
 
@@ -315,6 +361,7 @@ def build_domain(
                     "units": "1",
                     "flag_values": "0 1",
                     "flag_meanings": "no_channel channel",
+                    "_FillValue": int(fill_mask) if fill_mask is not None else 0,
                 },
             )
         progress.update(1)
@@ -324,11 +371,18 @@ def build_domain(
         if grid_mapping and grid_mapping in dem_ds:
             ds_out[grid_mapping] = xr.DataArray(0, attrs=dict(dem_ds[grid_mapping].attrs))
             ds_out[dem_var].attrs["grid_mapping"] = grid_mapping
+            ds_out[d8_var].attrs["grid_mapping"] = grid_mapping
+            ds_out[cn_var].attrs["grid_mapping"] = grid_mapping
+            if channel_mask is not None:
+                ds_out[mask_var].attrs["grid_mapping"] = grid_mapping
 
         ds_out.attrs.update(
             {
                 "title": "LPERFECT simulation domain",
                 "source": "Prepared for LPERFECT (DEM + D8 + CN)",
+                "institution": dem_ds.attrs.get("institution", "LPERFECT"),
+                "history": f"{datetime.now(timezone.utc).isoformat()}: domain created",
+                "references": "Hi-WeFAI / LPERFECT",
                 "Conventions": "CF-1.10",
             }
         )

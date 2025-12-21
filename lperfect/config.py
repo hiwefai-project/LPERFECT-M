@@ -25,8 +25,8 @@ def default_config() -> Dict[str, Any]:  # define function default_config
                 "d8": "d8",  # execute statement
                 "cn": "cn",  # execute statement
                 "channel_mask": "channel_mask",  # execute statement
-                "x": "x",  # execute statement
-                "y": "y",  # execute statement
+                "x": "longitude",  # execute statement
+                "y": "latitude",  # execute statement
             },  # execute statement
         },  # execute statement
         "model": {  # execute statement

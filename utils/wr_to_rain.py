@@ -34,9 +34,10 @@ def _parse_time(value: Optional[str]) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
-def _time_to_hours(dt: datetime) -> float:
+def _time_to_hours(dt: datetime) -> int:
     base = datetime(1900, 1, 1, tzinfo=timezone.utc)
-    return (dt - base).total_seconds() / 3600.0
+    hours = (dt - base).total_seconds() / 3600.0
+    return int(round(hours))
 
 
 def _normalize_dims(da: xr.DataArray) -> xr.DataArray:
@@ -126,7 +127,7 @@ def convert_vmi_to_rain(
             "crs": xr.DataArray(0, attrs=_crs_attrs(da, grid_mapping_name, epsg_code)),
         },
         coords={
-            "time": ("time", [time_value]),
+            "time": ("time", np.array([time_value], dtype=np.int32)),
             "latitude": ("latitude", da["latitude"].values),
             "longitude": ("longitude", da["longitude"].values),
         },

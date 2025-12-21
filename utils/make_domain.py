@@ -333,7 +333,7 @@ def build_domain(
             dims=(latitude_name, longitude_name),
             attrs={
                 "long_name": "D8_flow_direction",
-                "flag_values": "1 2 4 8 16 32 64 128",
+                "flag_values": D8_CODES.tolist(),
                 "flag_meanings": "E SE S SW W NW N NE",
                 "comment": "ESRI D8 encoding (see LPERFECT model.encoding).",
                 "_FillValue": int(fill_d8),

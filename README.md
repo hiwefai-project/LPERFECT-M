@@ -4,7 +4,7 @@
 
 A detailed guide to preparing **domain** and **rainfall forcing** NetCDF inputs (with GDAL/CDO/NCO examples and Italy-oriented datasets) is provided here:
 
-- [`data.md`](../data.md) (in this repository root)
+- [`docs/data.md`](docs/data.md) (in this repository)
 
 
 LPERFECT is a lightweight **Lagrangian runoff + flood routing model** designed for fast flood screening on gridded domains.

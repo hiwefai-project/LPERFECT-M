@@ -6,6 +6,13 @@ A detailed guide to preparing **domain** and **rainfall forcing** NetCDF inputs 
 
 - [`docs/data.md`](docs/data.md) (in this repository)
 
+## Documentation
+
+- [`docs/getting_started.md`](docs/getting_started.md)
+- [`docs/configure.md`](docs/configure.md)
+- [`docs/model_description.md`](docs/model_description.md)
+- [`docs/data.md`](docs/data.md)
+
 
 LPERFECT is a lightweight **Lagrangian runoff + flood routing model** designed for fast flood screening on gridded domains.
 It is engineered to be **restartable**, **MPI-parallel** (row-slab + particle migration), and **production-ready** from a software-architecture point of view (modular package layout, clear separation of concerns).

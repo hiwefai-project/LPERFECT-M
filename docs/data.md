@@ -5,6 +5,9 @@ This document describes **how to prepare all input datasets** required by **LPER
 - `ncml/domain.ncml`
 - `ncml/rain_time_dependent.ncml`
 - `ncml/rain_static.ncml`
+- `ncml/rain_bundle_optional.ncml`
+- `ncml/output_flood_depth.ncml`
+- `ncml/restart_state.ncml`
 
 LPERFECT **only uses NetCDF inputs** and follows **CF-1.10 conventions** to ensure interoperability, reproducibility, and long-term maintainability.
 
@@ -76,6 +79,9 @@ Each spatial variable (`dem`, `cn`, etc.) must reference it via:
 grid_mapping = "crs"
 ```
 
+The NcML template includes a `crs` variable with CF grid-mapping attributes. If you omit
+the CRS variable, ensure your tools can still infer the grid geometry.
+
 ### 2.4 DEM Preparation
 
 The DEM should:
@@ -137,7 +143,7 @@ Used for:
 | Variable | Description | Units |
 |--------|------------|-------|
 | `time(time)` | time coordinate | hours since 1900-01-01 00:00:0.0 |
-| `rain_rate(time,latitude,longitude)` | rainfall rate | mm h⁻¹ |
+| `rain_rate(time,latitude,longitude)` | rainfall rate | mm h-1 |
 
 #### Time Coordinate
 
@@ -163,9 +169,21 @@ Required variable:
 
 | Variable | Description | Units |
 |--------|------------|-------|
-| `rain_rate(latitude,longitude)` | rainfall rate | mm h⁻¹ |
+| `rain_rate(latitude,longitude)` | rainfall rate | mm h-1 |
 
 No time dimension is present.
+
+### 3.3 Optional Multi-Source Bundle (`rain_bundle_optional.nc`)
+
+**Reference specification:** `ncml/rain_bundle_optional.ncml`
+
+This optional format packages multiple rainfall sources in a single file using:
+- `radar_rain_rate(time,latitude,longitude)`
+- `station_rain_rate(time,latitude,longitude)`
+- `model_rain_rate(time,latitude,longitude)`
+
+Each variable uses units of `mm h-1` and shares the same `time`, `latitude`, and
+`longitude` coordinates as the other rainfall inputs.
 
 ---
 
@@ -182,7 +200,31 @@ LPERFECT does **not** perform reprojection or resampling internally.
 
 ---
 
-## 5. Quality Checks (Strongly Recommended)
+## 5. Output and Restart Datasets (Reference)
+
+While LPERFECT writes outputs automatically, the following NcML files describe the
+expected structure for post-processing and validation.
+
+### 5.1 Flood Depth Output (`output_flood_depth.nc`)
+
+**Reference specification:** `ncml/output_flood_depth.ncml`
+
+Expected variables:
+- `flood_depth(latitude,longitude)` in meters
+- `risk_index(latitude,longitude)` dimensionless
+
+### 5.2 Restart State (`restart_state.nc`)
+
+**Reference specification:** `ncml/restart_state.ncml`
+
+Expected fields include:
+- `P_cum_mm(latitude,longitude)` and `Q_cum_mm(latitude,longitude)`
+- Particle arrays (`particle_r`, `particle_c`, `particle_vol`, `particle_tau`)
+- Scalars like `elapsed_s`, `cum_rain_vol_m3`, `cum_runoff_vol_m3`, `cum_outflow_vol_m3`
+
+---
+
+## 6. Quality Checks (Strongly Recommended)
 
 Before running LPERFECT, verify:
 

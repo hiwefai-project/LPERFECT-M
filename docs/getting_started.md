@@ -40,7 +40,7 @@ LPERFECT-M requires two main inputs:
 
 ### 3.1 Domain NetCDF
 
-The domain NetCDF must contain the following 2D variables (dimensions `y, x`):
+The domain NetCDF must contain the following 2D variables (dimensions `latitude, longitude`):
 
 | Variable | Description | Units |
 |--------|-------------|-------|
@@ -50,10 +50,11 @@ The domain NetCDF must contain the following 2D variables (dimensions `y, x`):
 | `channel_mask` *(optional)* | River network mask | 0/1 |
 
 It must also include 1D coordinate variables:
-- `x(x)` – horizontal coordinate
-- `y(y)` – vertical coordinate
+- `latitude(latitude)` – latitude coordinate
+- `longitude(longitude)` – longitude coordinate
 
-> Coordinate names can be remapped via `domain.varmap` in `config.json`.
+> Coordinate names can be remapped via `domain.varmap` in `config.json` if your files
+> use `x/y` or other naming conventions.
 
 ---
 
@@ -126,8 +127,8 @@ This can be derived from flow accumulation thresholds.
 Combine `dem`, `d8`, `cn` (and optional `channel_mask`) into a single NetCDF file.
 
 Requirements:
-- All variables on dimensions `(y, x)`
-- Include `x(x)` and `y(y)` coordinates
+- All variables on dimensions `(latitude, longitude)`
+- Include `latitude(latitude)` and `longitude(longitude)` coordinates
 - Consistent metadata and no misaligned grids
 
 ---
@@ -137,8 +138,8 @@ Requirements:
 ### 5.1 Supported Rainfall Formats
 
 Rainfall NetCDFs can be:
-- Static: `(y, x)`
-- Time-varying: `(time, y, x)`
+- Static: `(latitude, longitude)`
+- Time-varying: `(time, latitude, longitude)`
 
 Supported semantics:
 - `intensity_mmph` – rainfall rate (mm/h)

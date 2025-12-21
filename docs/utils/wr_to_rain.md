@@ -1,6 +1,6 @@
 # `wr_to_rain.py`: Weather radar VMI GeoTIFF to rainfall NetCDF
 
-`utils/wr_to_rain.py` converts a single-band weather radar VMI GeoTIFF into a CF-compliant rainfall NetCDF file that can be used as a rain forcing input for LPERFECT. The converter normalizes raster dimensions, attaches CF metadata, and writes a `rain_rate` variable with a time axis.
+`utils/wr_to_rain.py` converts a single-band weather radar VMI GeoTIFF (reflectivity in dBZ) into a CF-compliant rainfall NetCDF file that can be used as a rain forcing input for LPERFECT. The converter normalizes raster dimensions, applies a Z–R relationship to compute rain rates, attaches CF metadata, and writes a `rain_rate` variable with a time axis.
 
 ## What the script produces
 
@@ -24,6 +24,18 @@ If you see an error about missing `rioxarray`, install the missing dependencies 
 - **Dimensions:** accepts `x/y` or `latitude/longitude` and normalizes to `latitude/longitude`.
 - **Fill values:** uses `_FillValue` or `missing_value` from the raster when present; otherwise uses the CLI `--fill-value` fallback.
 - **Time:** use `--time` to provide an ISO-8601 timestamp. If omitted, the current UTC time is used.
+- **Z–R parameters:** uses `Z = a * R^b` to convert dBZ to rain rate with configurable `a` and `b`.
+
+## Converting dBZ to rain rate
+
+The conversion follows the standard Z–R relationship:
+
+```
+Z = a * R^b
+R = (Z / a)^(1 / b)
+```
+
+with `Z = 10^(dBZ / 10)`. The defaults (`a=200`, `b=1.6`) correspond to a Marshall–Palmer-style relationship often used for stratiform precipitation. You can supply alternate coefficients for local climatology or radar calibration via `--z-r-a` and `--z-r-b` (see the cited reference for guidance on appropriate ranges and tuned values).
 
 ## Command-line usage
 
@@ -37,7 +49,9 @@ python utils/wr_to_rain.py \
   --source "Radar VMI" \
   --grid-mapping-name latitude_longitude \
   --epsg EPSG:4326 \
-  --fill-value -9999
+  --fill-value -9999 \
+  --z-r-a 200 \
+  --z-r-b 1.6
 ```
 
 ### Arguments
@@ -51,6 +65,8 @@ python utils/wr_to_rain.py \
 - `--grid-mapping-name`: Override the CF `grid_mapping_name` attribute.
 - `--epsg`: Override the EPSG code (e.g., `EPSG:4326`).
 - `--fill-value`: Fallback fill value when the raster provides none.
+- `--z-r-a`: Z–R parameter `a` in `Z=a*R^b` (defaults to `200.0`).
+- `--z-r-b`: Z–R parameter `b` in `Z=a*R^b` (defaults to `1.6`).
 
 ## Example
 
@@ -64,7 +80,9 @@ python utils/wr_to_rain.py \
   --source-name "Regional Radar" \
   --institution "Hydro-Meteorological Center" \
   --source "VMI radar product" \
-  --epsg EPSG:4326
+  --epsg EPSG:4326 \
+  --z-r-a 300 \
+  --z-r-b 1.4
 ```
 
 The resulting `rain_20240601_1200.nc` is ready to be referenced in your LPERFECT configuration as a rainfall forcing dataset.

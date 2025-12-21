@@ -14,6 +14,67 @@ import xarray as xr
 TIME_UNITS = "hours since 1900-01-01 00:00:0.0"
 
 
+def dbz_to_rainrate(
+    dbz: np.ndarray,
+    a: float = 200.0,
+    b: float = 1.6,
+    dbz_min: Optional[float] = None,
+    dbz_max: Optional[float] = None,
+    nodata_value: Optional[float] = None,
+) -> np.ndarray:
+    """
+    Convert reflectivity in dBZ to rain rate in mm/h using Z=a*R^b.
+
+    Parameters
+    ----------
+    dbz : ndarray
+        Reflectivity in dBZ.
+    a, b : float
+        Z–R parameters.
+    dbz_min, dbz_max : float or None
+        Optional clipping in dBZ (helps avoid absurd outliers).
+    nodata_value : float or None
+        If provided, treat that dbz value as nodata.
+
+    Returns
+    -------
+    R : ndarray
+        Rain rate in mm/h (float32), with NaN where nodata/invalid.
+    """
+    dbz = dbz.astype(np.float32, copy=False)
+
+    # Build a validity mask
+    valid = np.isfinite(dbz)
+    if nodata_value is not None:
+        valid &= (dbz != nodata_value)
+
+    # Optional clipping
+    if dbz_min is not None:
+        valid &= (dbz >= dbz_min)
+    if dbz_max is not None:
+        valid &= (dbz <= dbz_max)
+
+    # Prepare output with NaNs
+    R = np.full(dbz.shape, np.nan, dtype=np.float32)
+    if not np.any(valid):
+        return R
+
+    # Z (linear) from dBZ
+    # dBZ = 10*log10(Z) -> Z = 10^(dBZ/10)
+    Z = np.empty_like(dbz, dtype=np.float32)
+    Z[valid] = np.power(10.0, dbz[valid] / 10.0, dtype=np.float32)
+
+    # R from Z–R
+    # R = (Z/a)^(1/b)
+    R[valid] = np.power(Z[valid] / float(a), 1.0 / float(b), dtype=np.float32)
+
+    # Guard against negative/inf (shouldn't happen, but be safe)
+    R[~np.isfinite(R)] = np.nan
+    R[R < 0] = np.nan
+
+    return R
+
+
 def _require_rioxarray() -> None:
     if importlib.util.find_spec("rioxarray") is None:
         raise ImportError(
@@ -93,6 +154,8 @@ def convert_vmi_to_rain(
     grid_mapping_name: Optional[str],
     epsg_code: Optional[str],
     fill_value: float,
+    z_r_a: float,
+    z_r_b: float,
 ) -> None:
     _require_rioxarray()
     import rioxarray as rxr
@@ -106,11 +169,23 @@ def convert_vmi_to_rain(
     da = _normalize_dims(da)
     da = da.astype(np.float32)
     fill_value = _pick_fill_value(da, fill_value)
+    nodata_value = fill_value if np.isfinite(fill_value) else None
 
     dt = _parse_time(timestamp)
     time_value = _time_to_hours(dt)
 
-    rain_rate = da.expand_dims(time=[time_value])
+    rain_rate_data = dbz_to_rainrate(
+        da.values,
+        a=z_r_a,
+        b=z_r_b,
+        nodata_value=nodata_value,
+    )
+    rain_rate = xr.DataArray(
+        rain_rate_data,
+        dims=da.dims,
+        coords=da.coords,
+        name="rain_rate",
+    ).expand_dims(time=[time_value])
     rain_rate.attrs.update(
         {
             "long_name": "rainfall_rate",
@@ -198,6 +273,20 @@ def main() -> None:
         default=-9999.0,
         help="Fallback fill value when none is provided by the raster",
     )
+    parser.add_argument(
+        "--z-r-a",
+        dest="z_r_a",
+        type=float,
+        default=200.0,
+        help="Z-R parameter a in Z=a*R^b (default: 200.0)",
+    )
+    parser.add_argument(
+        "--z-r-b",
+        dest="z_r_b",
+        type=float,
+        default=1.6,
+        help="Z-R parameter b in Z=a*R^b (default: 1.6)",
+    )
     args = parser.parse_args()
 
     convert_vmi_to_rain(
@@ -210,6 +299,8 @@ def main() -> None:
         grid_mapping_name=args.grid_mapping_name,
         epsg_code=args.epsg_code,
         fill_value=args.fill_value,
+        z_r_a=args.z_r_a,
+        z_r_b=args.z_r_b,
     )
 
 

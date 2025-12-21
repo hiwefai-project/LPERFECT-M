@@ -99,7 +99,24 @@ def _regrid_to_target(da: xr.DataArray, target: GridSpec, method: str) -> xr.Dat
 
 
 def _load_var(path: str, var_name: str, x_name: str, y_name: str) -> tuple[xr.DataArray, xr.Dataset]:
-    ds = xr.open_dataset(path)
+    raster_exts = (".tif", ".tiff", ".geotiff", ".gtiff")
+    if path.lower().endswith(raster_exts):
+        try:
+            import rioxarray as rxr
+        except ImportError as exc:
+            raise ImportError(
+                "Reading GeoTIFF inputs requires rioxarray and rasterio. "
+                "Install them or convert the input to NetCDF."
+            ) from exc
+        da = rxr.open_rasterio(path)
+        if "band" in da.dims:
+            if da.sizes["band"] < 1:
+                raise ValueError(f"No bands found in raster {path}")
+            da = da.isel(band=0, drop=True)
+        da = da.rename(var_name)
+        ds = da.to_dataset()
+    else:
+        ds = xr.open_dataset(path)
     if var_name not in ds:
         raise KeyError(f"Variable '{var_name}' not found in {path}")
     da = _normalize_da(ds[var_name], x_name=x_name, y_name=y_name)

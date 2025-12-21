@@ -5,7 +5,7 @@
 
 ## 1. Overview
 
-LPERFECT is a **Lagrangian, particle-based hydrological model** designed to estimate surface runoff, flood propagation, and hydrogeological risk over gridded terrains.  
+LPERFECT is a **Lagrangian, particle-based hydrological model** designed to estimate surface runoff, flood propagation, and hydrogeological risk over gridded terrains.
 It is optimized for **parallel execution (MPI)** and **operational workflows**, and is fully integrated in the **Hi-WeFAI** (*High-Performance Weather and Flood AI Systems*) project.
 
 Unlike full hydrodynamic solvers, LPERFECT focuses on **computational efficiency, robustness, and scalability**, making it suitable for:
@@ -18,44 +18,43 @@ Unlike full hydrodynamic solvers, LPERFECT focuses on **computational efficiency
 
 ## 2. Conceptual Architecture
 
-![LPERFECT conceptual pipeline](figures/lperfect_pipeline.png)
+![LPERFECT conceptual pipeline](figures_svg/lperfect_pipeline.svg)
 
-**Pipeline steps:**
+The LPERFECT processing pipeline is organized as follows:
 
-1. Rainfall ingestion (multi-source, time-aware)
-2. Runoff generation (SCS Curve Number)
-3. Lagrangian particle spawning
-4. D8-based routing with travel-time control
-5. Particle migration across MPI domains
-6. Flood depth reconstruction
-7. Hydrogeological risk assessment
-
----
-
-## 3. Governing Concepts
-
-### 3.1 Lagrangian Representation
-
-Water is represented by **discrete particles**, each carrying a small volume of water:
-
-- particles are created from incremental runoff,
-- particles move along D8 flow directions,
-- routing is controlled by **travel time parameters**,
-- mass conservation is ensured by construction.
-
-This formulation avoids global CFL constraints and is **naturally parallelizable**.
-
-![Particle routing](figures/particle_routing.png)
+1. **Rainfall ingestion** from multiple, heterogeneous sources (radar, stations, NWP), blended in a time-aware fashion.
+2. **Runoff generation** using the cumulative SCS Curve Number (CN) method.
+3. **Particle spawning**, converting incremental runoff into discrete water parcels.
+4. **Lagrangian routing** over a D8 flow network with configurable travel times.
+5. **MPI-based particle migration** across domain partitions.
+6. **Flood depth reconstruction** and **hydrogeological risk assessment**.
+7. **CF-compliant NetCDF outputs** for downstream analysis.
 
 ---
 
-## 4. Runoff Generation
+## 3. Lagrangian Representation of Surface Water
 
-LPERFECT uses the **SCS Curve Number (CN)** method in its cumulative form.
+Water is represented by **discrete particles**, each carrying a fixed reference volume.
 
-### Equations
+Key properties:
+- particles are created locally from runoff excess,
+- particles move independently along D8-defined paths,
+- mass conservation is ensured by construction,
+- no global CFL constraint is required.
 
-Potential retention:
+![Particle routing](figures_svg/geographical_example.svg)
+
+The figure above illustrates the full chain **DEM → D8 → particles → flood depth** on a simplified geographical example.
+
+---
+
+## 4. Runoff Generation Model
+
+LPERFECT adopts the **SCS Curve Number (CN)** method in cumulative form.
+
+### Governing equations
+
+Potential maximum retention:
 
 \[
 S = \frac{25400}{CN} - 254
@@ -82,7 +81,7 @@ Where:
 - \(Q\) is cumulative runoff (mm),
 - \(\alpha\) is the initial abstraction ratio.
 
-Incremental runoff per timestep is:
+Incremental runoff is obtained as:
 
 \[
 \Delta Q = Q(t) - Q(t-1)
@@ -90,34 +89,28 @@ Incremental runoff per timestep is:
 
 ---
 
-## 5. Lagrangian Routing
+## 5. D8-Based Lagrangian Routing
 
-### 5.1 D8 Flow Network
-
-Each grid cell routes water to **one downstream neighbor** defined by a D8 direction grid.
+Each grid cell routes particles to **one downstream neighbor**, defined by a D8 flow-direction raster.
 
 Supported encodings:
-- ESRI (1,2,4,8,16,32,64,128)
-- Clockwise (0–7)
+- **ESRI** (1, 2, 4, 8, 16, 32, 64, 128)
+- **Clockwise** (0–7)
 
-### 5.2 Travel Time
+### Travel time control
 
-Particles advance only when their internal timer \(\tau \le 0\).  
+Particles advance only when their internal clock \(\tau \le 0\).
 After each hop:
+- hillslope cell: \(\tau = t_{hill}\),
+- channel cell: \(\tau = t_{channel}\).
 
-- hillslope cell: \(\tau = t_{hill}\)
-- channel cell: \(\tau = t_{channel}\)
-
-This allows:
-- sub-timestep control,
-- channel acceleration,
-- numerical stability.
+This mechanism enables sub-timestep stability and channel acceleration without explicit hydrodynamics.
 
 ---
 
-## 6. Parallelization Strategy
+## 6. Parallelization Strategy (MPI)
 
-![MPI slab decomposition](figures/mpi_slabs.png)
+![MPI slab decomposition](figures_svg/mpi_slabs.svg)
 
 LPERFECT uses **row-slab domain decomposition**:
 
@@ -125,29 +118,24 @@ LPERFECT uses **row-slab domain decomposition**:
 - particles belong to the rank owning their current row,
 - particles crossing slab boundaries are migrated using `MPI_Alltoallv`.
 
-**Key properties:**
-- no global synchronization during routing,
-- communication proportional to boundary crossings,
-- excellent weak scalability.
+This strategy ensures:
+- minimal communication overhead,
+- excellent weak scalability,
+- natural compatibility with the Lagrangian formulation.
 
 ---
 
 ## 7. Restartable State Model
 
-The full model state is checkpointed in **NetCDF**:
+The full simulation state is checkpointed in **NetCDF format**, enabling restart and workflow chaining.
 
-Stored quantities:
+![Restart workflow](figures_svg/lperfect_architecture.svg)
+
+Stored state includes:
 - cumulative precipitation and runoff fields,
 - particle positions, volumes, and timers,
 - elapsed simulation time,
-- cumulative mass diagnostics.
-
-![Restart workflow](figures/restart_workflow.png)
-
-This enables:
-- fault tolerance,
-- operational chaining,
-- ensemble splitting.
+- mass balance diagnostics.
 
 ---
 
@@ -160,19 +148,19 @@ h(i,j) = \frac{\sum V_p(i,j)}{A(i,j)}
 \]
 
 Where:
-- \(V_p\) is particle volume,
-- \(A\) is cell area.
+- \(V_p\) is the particle volume,
+- \(A(i,j)\) is the grid-cell area.
 
-The result is a **spatially distributed flood depth map**.
+The result is a spatially distributed flood-depth field.
 
 ---
 
 ## 9. Hydrogeological Risk Index
 
-LPERFECT computes a **dimensionless risk index** combining:
+LPERFECT computes a **dimensionless hydrogeological risk index** by combining:
 
-1. Direct hydrological forcing (runoff),
-2. Morphological control (flow accumulation).
+1. **Direct hydrological forcing** (cumulative runoff),
+2. **Morphological control** (flow accumulation).
 
 ### Definition
 
@@ -181,31 +169,29 @@ R = \beta \, \hat{Q} + (1 - \beta) \, \hat{A}
 \]
 
 Where:
-- \(\hat{Q}\) = normalized cumulative runoff,
-- \(\hat{A}\) = normalized flow accumulation,
-- \(\beta\) = balance parameter.
+- \(\hat{Q}\) is normalized runoff,
+- \(\hat{A}\) is normalized flow accumulation,
+- \(\beta\) is a configurable balance parameter.
 
-Normalization is performed using robust percentiles.
-
-![Risk index concept](figures/risk_index.png)
+Robust normalization is performed using percentile thresholds.
 
 ---
 
 ## 10. Input and Output Data Model
 
-### Input
-- Domain NetCDF (DEM, D8, CN, optional channel mask)
-- Rainfall NetCDFs (time-aware)
+### Inputs
+- Domain NetCDF: DEM, D8, CN, optional channel mask
+- Rainfall NetCDFs: time-dependent, multi-source
 
-### Output
+### Outputs
 - `flood_depth(y,x)` [m]
 - `risk_index(y,x)` [-]
 
-All outputs are **CF-1.10 compliant**.
+All outputs are **CF-1.10 compliant**, ensuring interoperability with standard geoscientific tools.
 
 ---
 
-## 11. Example Workflow
+## 11. Example Execution
 
 ```bash
 mpirun -np 8 python main.py --config config.json
@@ -222,12 +208,12 @@ ds.flood_depth.plot()
 ## 12. Scope and Limitations
 
 LPERFECT is:
-- ✔ fast and scalable,
-- ✔ mass conservative,
-- ✔ well suited for ensembles and nowcasting.
+- fast, scalable, and mass conservative,
+- suitable for ensemble and nowcasting applications,
+- designed for HPC and cloud environments.
 
 LPERFECT is **not**:
-- a 2D shallow-water solver,
+- a full shallow-water or Navier–Stokes solver,
 - a replacement for detailed hydraulic models.
 
 ---
@@ -239,8 +225,8 @@ Planned extensions include:
 - GPU acceleration,
 - alternative infiltration models,
 - coupling with hydraulic solvers,
-- uncertainty propagation.
+- uncertainty propagation and probabilistic risk metrics.
 
 ---
 
-**LPERFECT** – a computationally efficient bridge between rainfall intelligence and flood-risk awareness.
+**LPERFECT** provides a computationally efficient bridge between **rainfall intelligence** and **flood-risk awareness**, supporting the goals of the Hi-WeFAI project.

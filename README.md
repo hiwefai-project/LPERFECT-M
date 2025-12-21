@@ -1,65 +1,24 @@
 # LPERFECT
 **Lagrangian Parallel Environmental Runoff and Flood Evaluation for Computational Terrain**
-## Data preparation
-
-A detailed guide to preparing **domain** and **rainfall forcing** NetCDF inputs (with GDAL/CDO/NCO examples and Italy-oriented datasets) is provided here:
-
-- [`docs/data.md`](docs/data.md) (in this repository)
-
-## Documentation
-
-- [`docs/getting_started.md`](docs/getting_started.md)
-- [`docs/configure.md`](docs/configure.md)
-- [`docs/model_description.md`](docs/model_description.md)
-- [`docs/data.md`](docs/data.md)
-- [`docs/make_domains.md`](docs/make_domains.md)
-- [`docs/wr_to_rain.md`](docs/wr_to_rain.md)
-
 
 LPERFECT is a lightweight **Lagrangian runoff + flood routing model** designed for fast flood screening on gridded domains.
 It is engineered to be **restartable**, **MPI-parallel** (row-slab + particle migration), and **production-ready** from a software-architecture point of view (modular package layout, clear separation of concerns).
-
----
-
-## 1) Context in Hi-WeFAI
 
 LPERFECT fits naturally in the **Hi-WeFAI** workflow, where blended precipitation forcing (radar nowcasting, stations, NWP)
 feeds a fast impact layer producing flood depth and risk maps.
 
 Project website: https://www.hiwefai-project.org
 
----
+## Documentation
 
-## 2) Project structure
+- [`docs/getting_started.md`](docs/getting_started.md)
+- [`docs/configure.md`](docs/configure.md)
+- [`docs/model_description.md`](docs/model_description.md)
+- Detailed guide to preparing **domain** and **rainfall forcing** NetCDF inputs (with GDAL/CDO/NCO examples and Italy-oriented datasets) [link](docs/data.md)
+- [`docs/make_domains.md`](docs/make_domains.md)
+- [`docs/wr_to_rain.md`](docs/wr_to_rain.md)
 
-```
-LPERFECT/
-  main.py                  # Thin entry point (CLI + orchestration)
-  config.json              # Example configuration
-  requirements.txt         # Python dependencies
-  lperfect/                # Python package
-    __init__.py
-    cli.py                 # CLI parsing
-    config.py              # default config + merging
-    logging_utils.py       # logging setup
-    time_utils.py          # time helpers (UTC, ISO parsing)
-    domain.py              # domain NetCDF reader + broadcast
-    d8.py                  # D8 downstream lookup
-    runoff.py              # SCS-CN runoff
-    rain.py                # rain inputs + blending (rank0 read)
-    particles.py           # particle data structure + pack/unpack
-    mpi_utils.py           # slab decomposition + migration + scatter/gather
-    hydraulics.py          # particle spawning/advection + volume grid
-    risk.py                # flow accumulation + risk index
-    io_netcdf.py           # output + restart NetCDF I/O (rank0 only)
-    simulation.py          # main simulation driver
-```
-
-All Python files include **pedantic, educational comments**.
-
----
-
-## 3) Installation
+## Installation
 
 ```bash
 pip install -r requirements.txt
@@ -68,9 +27,7 @@ pip install -r requirements.txt
 MPI runs require an MPI runtime (OpenMPI / MPICH) and `mpi4py`.
 Optional GPU acceleration requires CuPy and can be enabled with `--device gpu`.
 
----
-
-## 4) Run
+## Run
 
 ### Serial
 ```bash
@@ -94,9 +51,7 @@ python main.py --config config.json --restart-in restart_state.nc
 python main.py --config config.json --restart-out restart_state.nc
 ```
 
----
-
-## 5) Input NetCDFs
+## Input NetCDFs
 
 ### 5.1 Domain NetCDF (`domain.domain_nc`)
 Required 2D variables (dims `latitude,longitude`):
@@ -114,7 +69,7 @@ Required CF grid mapping (per `/cdl/domain.cdl`):
 - Include a `crs` variable with `grid_mapping_name`, `epsg_code`, `semi_major_axis`, and `inverse_flattening`.
 - Each spatial variable (`dem`, `d8`, `cn`, `channel_mask`) should reference it via `grid_mapping = "crs"`.
 
-### 5.2 Rain NetCDFs
+### Rain NetCDFs
 Each rain source follows the CDL templates in `/cdl`:
 - **Static rainfall**: `rain_rate(latitude,longitude)` with units `mm h-1`
 - **Time-dependent rainfall**: `rain_rate(time,latitude,longitude)` with units `mm h-1`
@@ -131,29 +86,27 @@ Time selection:
 - `nearest`: pick the time slice closest to simulation timestamp (`model.start_time` + elapsed)
 - `step`: pick `time[k]` by index
 
----
+## Model description
 
-## 6) Model description
+A more detailed description of the model is available here [link](docs/model_description.md)
 
-### 6.1 Runoff generation (SCS Curve Number)
+### Runoff generation (SCS Curve Number)
 LPERFECT uses cumulative SCS-CN:
 - accumulate precipitation `P_cum` (mm)
 - convert to cumulative runoff `Q_cum` (mm)
 - incremental runoff is `dQ = Q_cum(t) - Q_cum(t-1)`
 
-### 6.2 Lagrangian routing
+### Lagrangian routing
 Incremental runoff is converted into **particles** (small fixed water volumes).  
 Particles hop along D8 with travel-time gating.
 
-### 6.3 Parallelization
+### Parallelization
 MPI mode uses:
 - **slab decomposition** (contiguous row blocks per rank)
 - **particle migration** via `Alltoallv` after advection
 - **rank0-only I/O** (domain read, rain read, restart+output writes)
 
----
-
-## 7) Restart usage
+## Restart usage
 
 Start fresh (and write restart every `restart.every` steps):
 ```bash
@@ -170,9 +123,7 @@ MPI restarts:
 - cumulative fields are scattered as slabs
 - particles are redistributed by row ownership
 
----
-
-## 8) Outputs
+## Outputs
 
 Results NetCDF contains:
 - `flood_depth(time,latitude,longitude)` in meters
@@ -194,4 +145,5 @@ plt.title("Risk index")
 plt.show()
 ```
 
----
+## Use case
+ToDo

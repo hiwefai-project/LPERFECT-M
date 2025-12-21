@@ -15,6 +15,7 @@ from .time_utils import parse_iso8601_to_datetime64
 from .d8 import build_downstream_index
 from .rain import build_rain_sources, blended_rain_step_mm_rank0
 from .runoff import scs_cn_cumulative_runoff_mm
+from .compute_backend import gpu_available, normalize_device
 from .hydraulics import spawn_particles_from_runoff_slab, advect_particles_one_step, local_volgrid_from_particles_slab
 from .particles import Particles, empty_particles, concat_particles
 from .risk import compute_flow_accum_area_m2, compute_risk_index
@@ -55,6 +56,16 @@ def run_simulation(comm: Any, rank: int, size: int, cfg: Dict[str, Any], dom: Do
     travel_time_channel_s = float(mcfg["travel_time_channel_s"])# Channel hop time.
     outflow_sink = bool(mcfg["outflow_sink"])                  # Drop particles leaving domain.
     log_every = int(mcfg.get("log_every", 10))                 # Diagnostics frequency.
+
+    # Resolve compute device.
+    compute_cfg = cfg.get("compute", {})
+    device = normalize_device(compute_cfg.get("device", "cpu"))
+    if device == "gpu" and not gpu_available():
+        if rank == 0:
+            logger.warning("GPU requested but CuPy not available; falling back to CPU.")
+        device = "cpu"
+    if rank == 0:
+        logger.info("Compute device: %s", device)
 
     # Start time for time-aware rain selection.
     start_time = parse_iso8601_to_datetime64(mcfg.get("start_time", None))
@@ -183,7 +194,7 @@ def run_simulation(comm: Any, rank: int, size: int, cfg: Dict[str, Any], dom: Do
 
         # Compute cumulative runoff with CN and incremental runoff for this step.
         CN_slab = dom.cn[r0:r1, :]
-        Q_cum_slab = scs_cn_cumulative_runoff_mm(P_slab, CN_slab, ia_ratio=ia_ratio)
+        Q_cum_slab = scs_cn_cumulative_runoff_mm(P_slab, CN_slab, ia_ratio=ia_ratio, device=device)
         dQ_mm = np.maximum(Q_cum_slab - Q_slab, 0.0)
         Q_slab = Q_cum_slab
 

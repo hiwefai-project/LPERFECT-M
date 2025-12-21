@@ -4,8 +4,16 @@
 # Import numpy.
 import numpy as np
 
+# Import optional backend helpers.
+from .compute_backend import get_array_module, to_device, to_numpy
 
-def scs_cn_cumulative_runoff_mm(P_cum_mm: np.ndarray, CN: np.ndarray, ia_ratio: float) -> np.ndarray:
+
+def scs_cn_cumulative_runoff_mm(
+    P_cum_mm: np.ndarray,
+    CN: np.ndarray,
+    ia_ratio: float,
+    device: str | None = None,
+) -> np.ndarray:
     """Compute cumulative runoff Q (mm) from cumulative precipitation P (mm) using SCS-CN.
 
     Formulae
@@ -20,20 +28,23 @@ def scs_cn_cumulative_runoff_mm(P_cum_mm: np.ndarray, CN: np.ndarray, ia_ratio: 
     -----
     CN must be in (0,100]. Invalid CN yields Q=0.
     """
+    # Choose backend.
+    xp = get_array_module(device)
+
     # Ensure float arrays.
-    P = np.asarray(P_cum_mm, dtype=np.float64)
-    CNv = np.asarray(CN, dtype=np.float64)
+    P = to_device(P_cum_mm, xp).astype(xp.float64)
+    CNv = to_device(CN, xp).astype(xp.float64)
 
     # Initialize runoff to zero.
-    Q = np.zeros_like(P, dtype=np.float64)
+    Q = xp.zeros_like(P, dtype=xp.float64)
 
     # Mask valid cells.
-    ok = (CNv > 0.0) & (CNv <= 100.0) & np.isfinite(CNv) & np.isfinite(P)
-    if not np.any(ok):
-        return Q
+    ok = (CNv > 0.0) & (CNv <= 100.0) & xp.isfinite(CNv) & xp.isfinite(P)
+    if not bool(xp.any(ok)):
+        return to_numpy(Q)
 
     # Potential retention S.
-    S = np.zeros_like(P, dtype=np.float64)
+    S = xp.zeros_like(P, dtype=xp.float64)
     S[ok] = (25400.0 / CNv[ok]) - 254.0
 
     # Initial abstraction.
@@ -41,9 +52,9 @@ def scs_cn_cumulative_runoff_mm(P_cum_mm: np.ndarray, CN: np.ndarray, ia_ratio: 
 
     # Condition for runoff.
     cond = ok & (P > Ia) & (S > 0.0)
-    if np.any(cond):
+    if bool(xp.any(cond)):
         num = (P[cond] - Ia[cond]) ** 2
         den = (P[cond] - Ia[cond] + S[cond])
         Q[cond] = num / den
 
-    return Q
+    return to_numpy(Q)

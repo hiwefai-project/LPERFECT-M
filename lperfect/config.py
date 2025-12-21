@@ -90,6 +90,9 @@ def default_config() -> Dict[str, Any]:
             "title": "LPERFECT flood depth + hydrogeological risk index",
             "institution": "UniParthenope",
         },
+        "compute": {
+            "device": "cpu",
+        },
     }
 
 

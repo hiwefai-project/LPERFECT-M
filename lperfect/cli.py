@@ -17,5 +17,6 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--restart-in", default=None, help="Restart NetCDF to resume from.")
     ap.add_argument("--restart-out", default=None, help="Restart NetCDF path to write.")
     ap.add_argument("--out-nc", default=None, help="Output NetCDF path (rank 0 only).")
+    ap.add_argument("--device", default=None, choices=["cpu", "gpu"], help="Compute device override.")
     # Return parsed args.
     return ap.parse_args()

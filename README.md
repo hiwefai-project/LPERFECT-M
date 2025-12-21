@@ -64,6 +64,7 @@ pip install -r requirements.txt
 ```
 
 MPI runs require an MPI runtime (OpenMPI / MPICH) and `mpi4py`.
+Optional GPU acceleration requires CuPy and can be enabled with `--device gpu`.
 
 ---
 
@@ -72,6 +73,11 @@ MPI runs require an MPI runtime (OpenMPI / MPICH) and `mpi4py`.
 ### Serial
 ```bash
 python main.py --config config.json
+```
+
+### GPU (optional)
+```bash
+python main.py --config config.json --device gpu
 ```
 
 ### MPI

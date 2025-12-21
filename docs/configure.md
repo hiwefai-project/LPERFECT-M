@@ -136,7 +136,7 @@ Controls where the spatial domain is loaded from and how variables are mapped.
 | `domain.varmap.x` | `x` | Coordinate name for the x/longitude axis. | `"x": "longitude"` |
 | `domain.varmap.y` | `y` | Coordinate name for the y/latitude axis. | `"y": "latitude"` |
 
-> Note: The provided NcML templates use `latitude`/`longitude` coordinate names. If you
+> Note: The provided CDL templates use `latitude`/`longitude` coordinate names. If you
 > follow those templates, set `domain.varmap.x = "longitude"` and
 > `domain.varmap.y = "latitude"` (or rename the coordinates in your NetCDF).
 

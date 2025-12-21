@@ -4,8 +4,6 @@
 LPERFECT is a lightweight **Lagrangian runoff + flood routing model** designed for fast flood screening on gridded domains.
 It is engineered to be **restartable**, **MPI-parallel** (row-slab + particle migration), and **production-ready** from a software-architecture point of view (modular package layout, clear separation of concerns).
 
-✅ **NetCDF-only policy**: domain, rainfall, restart, and outputs are all **NetCDF**.
-
 ---
 
 ## 1) Context in Hi-WeFAI
@@ -169,13 +167,3 @@ plt.title("Risk index")
 plt.show()
 ```
 
----
-
-## 9) Production notes
-
-- Keep `main.py` thin; extend behavior by editing modules in `lperfect/`.
-- The MPI decomposition and restart scatter/gather are designed for correctness and clarity.
-- For very large domains, consider future enhancements:
-  - parallel NetCDF I/O (e.g., netCDF4/HDF5 with MPI)
-  - more efficient particle storage (chunked SoA, memory pools)
-  - optional compression and chunking settings in NetCDF outputs

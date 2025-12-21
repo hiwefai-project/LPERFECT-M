@@ -15,8 +15,8 @@ import xarray as xr  # Dataset and DataArray abstractions for NetCDF.
 
 @dataclass
 class GridSpec:
-    x_name: str  # Name of the x-coordinate dimension.
-    y_name: str  # Name of the y-coordinate dimension.
+    longitude_name: str  # Name of the x-coordinate dimension.
+    latitude_name: str  # Name of the y-coordinate dimension.
     x: np.ndarray  # 1D coordinate array for x.
     y: np.ndarray  # 1D coordinate array for y.
 
@@ -34,13 +34,13 @@ D8_DIRS = [
 ]
 
 
-def _normalize_da(da: xr.DataArray, x_name: str, y_name: str) -> xr.DataArray:
+def _normalize_da(da: xr.DataArray, longitude_name: str, latitude_name: str) -> xr.DataArray:
     # Ensure the variable is 2D so downstream math behaves as expected.
     if len(da.dims) != 2:
         raise ValueError(f"Expected 2D variable; got dims={da.dims}")
     # Rename dimensions to the expected x/y names if needed.
-    if da.dims != (y_name, x_name):
-        da = da.rename({da.dims[0]: y_name, da.dims[1]: x_name})
+    if da.dims != (latitude_name, longitude_name):
+        da = da.rename({da.dims[0]: latitude_name, da.dims[1]: longitude_name})
     # Return the normalized DataArray to the caller.
     return da
 
@@ -68,12 +68,12 @@ def _build_axis(minv: float, maxv: float, step: float, ascending: bool) -> np.nd
     return np.arange(start, end + step * 0.5, step)
 
 
-def _grid_from_da(da: xr.DataArray, x_name: str, y_name: str) -> GridSpec:
+def _grid_from_da(da: xr.DataArray, longitude_name: str, latitude_name: str) -> GridSpec:
     # Extract coordinate arrays into numpy for downstream operations.
-    x = np.asarray(da[x_name].values)
-    y = np.asarray(da[y_name].values)
+    x = np.asarray(da[longitude_name].values)
+    y = np.asarray(da[latitude_name].values)
     # Return a GridSpec for consistent grid metadata handling.
-    return GridSpec(x_name=x_name, y_name=y_name, x=x, y=y)
+    return GridSpec(longitude_name=longitude_name, latitude_name=latitude_name, x=x, y=y)
 
 
 def _apply_bbox(da: xr.DataArray, grid: GridSpec, bbox: Optional[Iterable[float]]) -> xr.DataArray:
@@ -84,8 +84,8 @@ def _apply_bbox(da: xr.DataArray, grid: GridSpec, bbox: Optional[Iterable[float]
     # Select the subset of the domain inside the bounding box.
     return da.sel(
         {
-            grid.x_name: _slice_for_bbox(grid.x, xmin, xmax),
-            grid.y_name: _slice_for_bbox(grid.y, ymin, ymax),
+            grid.longitude_name: _slice_for_bbox(grid.x, xmin, xmax),
+            grid.latitude_name: _slice_for_bbox(grid.y, ymin, ymax),
         }
     )
 
@@ -112,12 +112,12 @@ def _apply_resolution(da: xr.DataArray, grid: GridSpec, res: Optional[Iterable[f
     new_x = _build_axis(xmin, xmax, dx, x_asc)
     new_y = _build_axis(ymin, ymax, dy, y_asc)
     # Interpolate the data onto the new grid.
-    return _interp_da(da, {grid.x_name: new_x, grid.y_name: new_y}, method=method)
+    return _interp_da(da, {grid.longitude_name: new_x, grid.latitude_name: new_y}, method=method)
 
 
 def _regrid_to_target(da: xr.DataArray, target: GridSpec, method: str) -> xr.DataArray:
     # Interpolate onto the target grid coordinates.
-    return _interp_da(da, {target.x_name: target.x, target.y_name: target.y}, method=method)
+    return _interp_da(da, {target.longitude_name: target.x, target.latitude_name: target.y}, method=method)
 
 
 def _interp_da(da: xr.DataArray, coords: dict[str, np.ndarray], method: str) -> xr.DataArray:
@@ -155,7 +155,7 @@ def _coord_attrs(name: str, src_attrs: dict) -> dict:
     return attrs
 
 
-def _load_var(path: str, var_name: str, x_name: str, y_name: str) -> tuple[xr.DataArray, xr.Dataset]:
+def _load_var(path: str, var_name: str, longitude_name: str, latitude_name: str) -> tuple[xr.DataArray, xr.Dataset]:
     raster_exts = (".tif", ".tiff", ".geotiff", ".gtiff")  # Supported raster file extensions.
     # Branch based on file type to load raster or NetCDF inputs.
     if path.lower().endswith(raster_exts):
@@ -180,7 +180,7 @@ def _load_var(path: str, var_name: str, x_name: str, y_name: str) -> tuple[xr.Da
     if var_name not in ds:
         raise KeyError(f"Variable '{var_name}' not found in {path}")
     # Normalize the variable to a consistent 2D layout.
-    da = _normalize_da(ds[var_name], x_name=x_name, y_name=y_name)
+    da = _normalize_da(ds[var_name], longitude_name=longitude_name, latitude_name=latitude_name)
     return da, ds  # Return both DataArray and its parent Dataset.
 
 
@@ -220,8 +220,8 @@ def build_domain(
     cn_var: str,
     d8_var: str,
     mask_var: str,
-    x_name: str,
-    y_name: str,
+    longitude_name: str,
+    latitude_name: str,
     bbox: Optional[Iterable[float]],
     resolution: Optional[Iterable[float]],
 ) -> None:
@@ -235,19 +235,19 @@ def build_domain(
 
     with tqdm(total=total_steps, desc="Building domain", unit="step") as progress:
         progress.set_description("Loading DEM")
-        dem_da, dem_ds = _load_var(dem_path, dem_var, x_name=x_name, y_name=y_name)
+        dem_da, dem_ds = _load_var(dem_path, dem_var, longitude_name=longitude_name, latitude_name=latitude_name)
         progress.update(1)
 
         progress.set_description("Applying bounding box")
-        dem_da = _apply_bbox(dem_da, _grid_from_da(dem_da, x_name, y_name), bbox)
+        dem_da = _apply_bbox(dem_da, _grid_from_da(dem_da, longitude_name, latitude_name), bbox)
         progress.update(1)
 
         progress.set_description("Applying resolution")
-        dem_da = _apply_resolution(dem_da, _grid_from_da(dem_da, x_name, y_name), resolution, method="linear")
+        dem_da = _apply_resolution(dem_da, _grid_from_da(dem_da, longitude_name, latitude_name), resolution, method="linear")
         progress.update(1)
 
         progress.set_description("Preparing grid")
-        grid = _grid_from_da(dem_da, x_name, y_name)
+        grid = _grid_from_da(dem_da, longitude_name, latitude_name)
         dx = float(np.median(np.abs(np.diff(grid.x))))
         dy = float(np.median(np.abs(np.diff(grid.y))))
         progress.update(1)
@@ -255,8 +255,8 @@ def build_domain(
         progress.set_description("Preparing D8")
         d8_da = None
         if d8_path:
-            d8_da, d8_ds = _load_var(d8_path, d8_var, x_name=x_name, y_name=y_name)
-            d8_da = _apply_bbox(d8_da, _grid_from_da(d8_da, x_name, y_name), bbox)
+            d8_da, d8_ds = _load_var(d8_path, d8_var, longitude_name=longitude_name, latitude_name=latitude_name)
+            d8_da = _apply_bbox(d8_da, _grid_from_da(d8_da, longitude_name, latitude_name), bbox)
             d8_da = _regrid_to_target(d8_da, grid, method="nearest")
             d8 = np.asarray(d8_da.values).astype(np.int32)
             d8_ds.close()
@@ -267,8 +267,8 @@ def build_domain(
         progress.set_description("Preparing CN")
         cn_da = None
         if cn_path:
-            cn_da, cn_ds = _load_var(cn_path, cn_var, x_name=x_name, y_name=y_name)
-            cn_da = _apply_bbox(cn_da, _grid_from_da(cn_da, x_name, y_name), bbox)
+            cn_da, cn_ds = _load_var(cn_path, cn_var, longitude_name=longitude_name, latitude_name=latitude_name)
+            cn_da = _apply_bbox(cn_da, _grid_from_da(cn_da, longitude_name, latitude_name), bbox)
             cn_da = _regrid_to_target(cn_da, grid, method="nearest")
             cn = np.asarray(cn_da.values).astype(np.float64)
             cn_ds.close()
@@ -280,8 +280,8 @@ def build_domain(
         mask_da = None
         if mask_path:
             progress.set_description("Preparing channel mask")
-            mask_da, mask_ds = _load_var(mask_path, mask_var, x_name=x_name, y_name=y_name)
-            mask_da = _apply_bbox(mask_da, _grid_from_da(mask_da, x_name, y_name), bbox)
+            mask_da, mask_ds = _load_var(mask_path, mask_var, longitude_name=longitude_name, latitude_name=latitude_name)
+            mask_da = _apply_bbox(mask_da, _grid_from_da(mask_da, longitude_name, latitude_name), bbox)
             mask_da = _regrid_to_target(mask_da, grid, method="nearest")
             channel_mask = (np.asarray(mask_da.values) > 0).astype(np.int8)
             mask_ds.close()
@@ -290,13 +290,13 @@ def build_domain(
         progress.set_description("Assembling dataset")
         x_coord = xr.DataArray(
             grid.x,
-            dims=(x_name,),
-            attrs=_coord_attrs(x_name, dem_da[x_name].attrs),
+            dims=(longitude_name,),
+            attrs=_coord_attrs(longitude_name, dem_da[longitude_name].attrs),
         )
         y_coord = xr.DataArray(
             grid.y,
-            dims=(y_name,),
-            attrs=_coord_attrs(y_name, dem_da[y_name].attrs),
+            dims=(latitude_name,),
+            attrs=_coord_attrs(latitude_name, dem_da[latitude_name].attrs),
         )
         fill_dem = _pick_fill_value(dem_da, np.nan)
         fill_d8 = None
@@ -305,8 +305,8 @@ def build_domain(
         ds_out = xr.Dataset()  # Start with an empty dataset.
         ds_out = ds_out.assign_coords(
             {
-                x_name: x_coord,
-                y_name: y_coord,
+                longitude_name: x_coord,
+                latitude_name: y_coord,
             }
         )
         fill_d8 = _pick_fill_value(d8_da if d8_path else dem_da, -9999)
@@ -319,7 +319,7 @@ def build_domain(
         dem_attrs = dict(dem_da.attrs)  # Copy DEM attributes for reuse.
         ds_out[dem_var] = xr.DataArray(
             np.asarray(dem_da.values, dtype=np.float64),
-            dims=(y_name, x_name),
+            dims=(latitude_name, longitude_name),
             attrs={
                 "standard_name": dem_attrs.get("standard_name", "surface_altitude"),
                 "long_name": dem_attrs.get("long_name", "digital_elevation_model"),
@@ -330,7 +330,7 @@ def build_domain(
 
         ds_out[d8_var] = xr.DataArray(
             d8.astype(np.int32),
-            dims=(y_name, x_name),
+            dims=(latitude_name, longitude_name),
             attrs={
                 "long_name": "D8_flow_direction",
                 "flag_values": "1 2 4 8 16 32 64 128",
@@ -342,7 +342,7 @@ def build_domain(
 
         ds_out[cn_var] = xr.DataArray(
             cn.astype(np.float64),
-            dims=(y_name, x_name),
+            dims=(latitude_name, longitude_name),
             attrs={
                 "long_name": "SCS_curve_number",
                 "units": "1",
@@ -355,7 +355,7 @@ def build_domain(
         if channel_mask is not None:
             ds_out[mask_var] = xr.DataArray(
                 channel_mask,
-                dims=(y_name, x_name),
+                dims=(latitude_name, longitude_name),
                 attrs={
                     "long_name": "channel_mask",
                     "units": "1",
@@ -404,9 +404,9 @@ def main() -> None:
     parser.add_argument("--cn-var", default="cn", help="CN variable name")
     parser.add_argument("--d8-var", default="d8", help="D8 variable name")
     parser.add_argument("--mask-var", default="channel_mask", help="Mask variable name")
-    parser.add_argument("--x-name", default="x", help="X/longitude coordinate name")
-    parser.add_argument("--y-name", default="y", help="Y/latitude coordinate name")
-    parser.add_argument("--bbox", nargs=4, type=float, metavar=("MINX", "MINY", "MAXX", "MAXY"))
+    parser.add_argument("--longitude-name", default="longitude", help="Longitude coordinate name")
+    parser.add_argument("--latitude-name", default="latitude", help="Latitude coordinate name")
+    parser.add_argument("--bbox", nargs=4, type=float, metavar=("min_lon", "min_lat", "max_lon", "max_lat"))
     parser.add_argument(
         "--resolution",
         nargs="+",
@@ -427,8 +427,8 @@ def main() -> None:
         cn_var=args.cn_var,
         d8_var=args.d8_var,
         mask_var=args.mask_var,
-        x_name=args.x_name,
-        y_name=args.y_name,
+        longitude_name=args.longitude_name,
+        latitude_name=args.latitude_name,
         bbox=args.bbox,
         resolution=args.resolution,
     )

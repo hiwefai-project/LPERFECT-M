@@ -7,17 +7,27 @@ dimensions:
   longitude = {{Nx}};
 
 variables:
+
   float latitude(latitude);
     latitude:description = "Latitude";
+    latitude:long_name = "latitude";
     latitude:units = "degrees_north";
 
   float longitude(longitude);
     longitude:description = "Longitude";
-    longitude:long_name = "latitude";
+    longitude:long_name = "longitude";
     longitude:units = "degrees_east";
 
+  int crs;
+    crs:grid_mapping_name = "{{grid_mapping_name}}";
+    crs:epsg_code = "{{EPSG:xxxx}}";
+    crs:semi_major_axis = "{{a}}";
+    crs:inverse_flattening = "{{inv_f}}";
+
   float rain_rate(latitude, longitude);
+    rain_rate:long_name = "rainfall_rate";
     rain_rate:standard_name = "rainfall_rate";
     rain_rate:units = "mm h-1";
+    rain_rate:grid_mapping = "crs";
     rain_rate:_FillValue = {{fill_value}};
 }

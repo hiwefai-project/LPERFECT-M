@@ -7,31 +7,39 @@ netcdf output_flood_depth {
 :lperfect_config_json = "{{minified_config_json}}";
 
 dimensions:
+  time = 1;
   latitude = {{Ny}};
   longitude = {{Nx}};
 
 variables:
+
+  int time(time=1);
+      :description = "Time";
+      :long_name = "time";
+      :units = "hours since 1900-01-01 00:00:0.0";
+
   float latitude(latitude);
     latitude:description = "Latitude";
+    latitude:long_name = "latitude";
     latitude:units = "degrees_north";
 
   float longitude(longitude);
     longitude:description = "Longitude";
-    longitude:long_name = "latitude";
+    longitude:long_name = "longitude";
     longitude:units = "degrees_east";
 
   int crs;
     crs:grid_mapping_name = "{{grid_mapping_name}}";
     crs:epsg_code = "{{EPSG:xxxx}}";
 
-  float flood_depth(latitude, longitude);
+  float flood_depth(time, latitude, longitude);
     flood_depth:standard_name = "water_depth";
     flood_depth:long_name = "flooded_water_depth";
     flood_depth:units = "m";
     flood_depth:grid_mapping = "crs";
     flood_depth:_FillValue = {{fill_value}};
 
-  float risk_index(latitude, longitude);
+  float risk_index(time, latitude, longitude);
     risk_index:long_name = "hydrogeological_risk_index";
     risk_index:units = "1";
     risk_index:grid_mapping = "crs";

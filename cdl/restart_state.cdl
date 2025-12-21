@@ -13,11 +13,12 @@ dimensions:
 variables:
   float latitude(latitude);
     latitude:description = "Latitude";
+    latitude:long_name = "latitude";
     latitude:units = "degrees_north";
 
   float longitude(longitude);
     longitude:description = "Longitude";
-    longitude:long_name = "latitude";
+    longitude:long_name = "longitude";
     longitude:units = "degrees_east";
 
   int crs;

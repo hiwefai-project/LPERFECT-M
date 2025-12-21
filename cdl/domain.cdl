@@ -40,6 +40,7 @@ variables:
     d8:flag_meanings = "E SE S SW W NW N NE";
     d8:comment = "ESRI D8 encoding (see LPERFECT model.encoding).";
     d8:_FillValue = {{d8_fill}};
+    d8:grid_mapping = "crs";
 
   double cn(latitude, longitude);
     cn:long_name = "SCS_curve_number";
@@ -47,6 +48,7 @@ variables:
     cn:valid_min = 0.0;
     cn:valid_max = 100.0;
     cn:_FillValue = {{cn_fill}};
+    cn:grid_mapping = "crs";
 
   byte channel_mask(latitude, longitude);
     channel_mask:long_name = "channel_mask";
@@ -54,4 +56,5 @@ variables:
     channel_mask:flag_values = 0, 1;
     channel_mask:flag_meanings = "no_channel channel";
     channel_mask:_FillValue = {{mask_fill}};
+    channel_mask:grid_mapping = "crs";
 }

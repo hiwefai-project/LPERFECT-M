@@ -71,5 +71,8 @@
     "Conventions": "CF-1.10",
     "title": "LPERFECT flood depth + hydrogeological risk index",
     "institution": "UniParthenope"
+  },
+  "compute": {
+    "device": "cpu"
   }
 }

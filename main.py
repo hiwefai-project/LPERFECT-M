@@ -64,6 +64,8 @@ def main() -> None:
         cfg["restart"]["out"] = args.restart_out
     if args.out_nc is not None:
         cfg["output"]["out_netcdf"] = args.out_nc
+    if args.device is not None:
+        cfg.setdefault("compute", {})["device"] = args.device
 
     # Enforce NetCDF-only.
     if cfg.get("domain", {}).get("mode", "netcdf") != "netcdf":

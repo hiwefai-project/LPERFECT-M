@@ -26,6 +26,7 @@ Run `python main.py --help` to see the available flags. The CLI currently offers
 | `--restart-in` | `None` | Resume from a restart NetCDF. Overrides `restart.in`. | `python main.py --restart-in restart_state.nc` |
 | `--restart-out` | `None` | Path to write restart NetCDF. Overrides `restart.out`. | `python main.py --restart-out restart_state.nc` |
 | `--out-nc` | `None` | Output NetCDF path. Overrides `output.out_netcdf`. | `python main.py --out-nc flood_depth.nc` |
+| `--device` | `None` | Compute device override (`cpu` or `gpu`). | `python main.py --device gpu` |
 
 > Tip: You can combine the CLI and JSON file. For example, keep a stable `config.json`
 > and vary only the output path with `--out-nc` for batch runs.
@@ -109,6 +110,9 @@ The JSON file mirrors the default configuration structure. A complete example
     "Conventions": "CF-1.10",
     "title": "LPERFECT flood depth + hydrogeological risk index",
     "institution": "UniParthenope"
+  },
+  "compute": {
+    "device": "cpu"
   }
 }
 ```
@@ -145,6 +149,27 @@ Controls where the spatial domain is loaded from and how variables are mapped.
       "x": "lon",
       "y": "lat"
     }
+  }
+}
+```
+
+---
+
+## `compute` section
+
+Select the array backend for compute-heavy operations. GPU support uses CuPy when available,
+and gracefully falls back to CPU if CuPy is missing.
+
+| Key | Default | Description | Example |
+| --- | --- | --- | --- |
+| `compute.device` | `cpu` | Compute device (`cpu` or `gpu`). | `"device": "gpu"` |
+
+**Example:**
+
+```json
+{
+  "compute": {
+    "device": "gpu"
   }
 }
 ```

@@ -145,11 +145,9 @@ def _pick_fill_value(da: xr.DataArray, default: float) -> float:
     return default
 
 
-def _load_domain_reference(domain_path: Optional[str]) -> Optional[xr.Dataset]:
-    resolved = Path(domain_path) if domain_path is not None else Path("cdl/domain.nc")
+def _load_domain_reference(domain_path: str) -> xr.Dataset:
+    resolved = Path(domain_path)
     if not resolved.exists():
-        if domain_path is None:
-            return None
         raise FileNotFoundError(f"Domain NetCDF not found: {resolved}")
     return xr.open_dataset(resolved)
 
@@ -179,9 +177,7 @@ def _extract_domain_crs(domain: xr.Dataset) -> Optional[str]:
     return None
 
 
-def _regrid_to_domain(da: xr.DataArray, domain: Optional[xr.Dataset]) -> xr.DataArray:
-    if domain is None:
-        return da
+def _regrid_to_domain(da: xr.DataArray, domain: xr.Dataset) -> xr.DataArray:
     template = _template_from_domain(domain)
     domain_crs = _extract_domain_crs(domain)
     if domain_crs:
@@ -207,7 +203,7 @@ def convert_vmi_to_rain(
     source: str,
     grid_mapping_name: Optional[str],
     epsg_code: Optional[str],
-    domain_path: Optional[str],
+    domain_path: str,
     fill_value: float,
     z_r_a: float,
     z_r_b: float,
@@ -324,9 +320,12 @@ def main() -> None:
         help="Override EPSG code (e.g., EPSG:4326)",
     )
     parser.add_argument(
-        "--domain-nc",
-        default=None,
-        help="Optional domain NetCDF to regrid onto (expects latitude/longitude coords).",
+        "--domain",
+        required=True,
+        help=(
+            "Domain NetCDF (compliant with cdl/domain.cdl) to regrid onto; "
+            "expects latitude/longitude coords."
+        ),
     )
     parser.add_argument(
         "--fill-value",
@@ -359,7 +358,7 @@ def main() -> None:
         source=args.source,
         grid_mapping_name=args.grid_mapping_name,
         epsg_code=args.epsg_code,
-        domain_path=args.domain_nc,
+        domain_path=args.domain,
         fill_value=args.fill_value,
         z_r_a=args.z_r_a,
         z_r_b=args.z_r_b,

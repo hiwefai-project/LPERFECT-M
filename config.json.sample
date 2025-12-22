@@ -1,0 +1,71 @@
+{
+  "domain": {
+    "mode": "netcdf",
+    "domain_nc": "domain.nc",
+    "varmap": {
+      "dem": "dem",
+      "d8": "d8",
+      "cn": "cn",
+      "channel_mask": "channel_mask",
+      "x": "longitude",
+      "y": "latitude"
+    }
+  },
+  "model": {
+    "start_time": "2025-12-21T00:00:00Z",
+    "T_s": 7200,
+    "dt_s": 5,
+    "encoding": "esri",
+    "ia_ratio": 0.2,
+    "particle_vol_m3": 0.25,
+    "travel_time_s": 5,
+    "travel_time_channel_s": 1,
+    "outflow_sink": true,
+    "log_every": 10
+  },
+  "rain": {
+    "schema": {
+      "time_var": "time",
+      "lat_var": "latitude",
+      "lon_var": "longitude",
+      "rain_var": "rain_rate",
+      "crs_var": "crs",
+      "time_units": "hours since 1900-01-01 00:00:0.0",
+      "rate_units": "mm h-1",
+      "require_cf": true,
+      "require_time_dim": true
+    },
+    "sources": {
+      "rain": {
+        "kind": "netcdf",
+        "path": "rain_time_dependent.nc",
+        "var": "rain_rate",
+        "time_var": "time",
+        "select": "nearest",
+        "mode": "intensity_mmph",
+        "weight": 1.0
+      }
+    }
+  },
+  "risk": {
+    "enabled": true,
+    "balance": 0.55,
+    "p_low": 5.0,
+    "p_high": 95.0
+  },
+  "restart": {
+    "in": null,
+    "out": "restart_state.nc",
+    "every": 120,
+    "strict_grid_check": true
+  },
+  "output": {
+    "out_netcdf": "flood_depth.nc",
+    "Conventions": "CF-1.10",
+    "title": "LPERFECT flood depth + hydrogeological risk index",
+    "institution": "UniParthenope"
+  },
+  "compute": {
+    "device": "cpu"
+  }
+}

@@ -198,6 +198,11 @@ Outputs and restarts can be controlled via CLI options.
 
 ## 7. Running the Model
 
+Prepare the configuration file.
+```bash
+cp config.json.sample config.json 
+```
+
 ### Serial execution
 ```bash
 python main.py --config config.json --out-nc flood.nc

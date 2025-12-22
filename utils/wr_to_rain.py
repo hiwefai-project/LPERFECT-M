@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import importlib.util
 from pathlib import Path
 from typing import Optional
@@ -84,9 +84,7 @@ def _require_rioxarray() -> None:
         )
 
 
-def _parse_time(value: Optional[str]) -> datetime:
-    if value is None:
-        return datetime.now(timezone.utc)
+def _parse_time(value: str) -> datetime:
     text = value.strip()
     if text.endswith("Z"):
         text = text[:-1] + "+00:00"
@@ -96,10 +94,16 @@ def _parse_time(value: Optional[str]) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
-def _time_to_hours(dt: datetime) -> int:
+def _time_to_hours(dt: datetime) -> float:
     base = datetime(1900, 1, 1, tzinfo=timezone.utc)
-    hours = (dt - base).total_seconds() / 3600.0
-    return int(round(hours))
+    return (dt - base).total_seconds() / 3600.0
+
+
+def _parse_input_list(value: str) -> list[str]:
+    items = [item.strip() for item in value.split(",") if item.strip()]
+    if not items:
+        raise argparse.ArgumentTypeError("Input list cannot be empty.")
+    return items
 
 
 def _normalize_dims(da: xr.DataArray) -> xr.DataArray:
@@ -195,9 +199,10 @@ def _regrid_to_domain(da: xr.DataArray, domain: xr.Dataset) -> xr.DataArray:
 
 
 def convert_vmi_to_rain(
-    input_path: str,
+    input_paths: list[str],
     output_path: str,
-    timestamp: Optional[str],
+    timestamp: str,
+    dt_seconds: float,
     source_name: str,
     institution: str,
     source: str,
@@ -211,34 +216,53 @@ def convert_vmi_to_rain(
     _require_rioxarray()
     import rioxarray as rxr
 
-    da = rxr.open_rasterio(input_path)
-    if "band" in da.dims:
-        if da.sizes["band"] < 1:
-            raise ValueError(f"No bands found in raster {input_path}")
-        da = da.isel(band=0, drop=True)
-    da = da.rename("rain_rate")
-    da = _normalize_dims(da)
     domain = _load_domain_reference(domain_path)
-    da = _regrid_to_domain(da, domain)
-    da = da.astype(np.float32)
-    fill_value = _pick_fill_value(da, fill_value)
-    nodata_value = fill_value if np.isfinite(fill_value) else None
-
-    dt = _parse_time(timestamp)
-    time_value = _time_to_hours(dt)
-
-    rain_rate_data = dbz_to_rainrate(
-        da.values,
-        a=z_r_a,
-        b=z_r_b,
-        nodata_value=nodata_value,
+    dt_start = _parse_time(timestamp)
+    time_values = np.array(
+        [
+            _time_to_hours(dt_start + timedelta(seconds=idx * dt_seconds))
+            for idx in range(len(input_paths))
+        ],
+        dtype=np.float64,
     )
-    rain_rate = xr.DataArray(
-        rain_rate_data,
-        dims=da.dims,
-        coords=da.coords,
-        name="rain_rate",
-    ).expand_dims(time=[time_value])
+
+    rain_rates: list[xr.DataArray] = []
+    da_reference: Optional[xr.DataArray] = None
+    output_fill_value: Optional[float] = None
+    for idx, input_path in enumerate(input_paths):
+        da = rxr.open_rasterio(input_path)
+        if "band" in da.dims:
+            if da.sizes["band"] < 1:
+                raise ValueError(f"No bands found in raster {input_path}")
+            da = da.isel(band=0, drop=True)
+        da = da.rename("rain_rate")
+        da = _normalize_dims(da)
+        da = _regrid_to_domain(da, domain)
+        da = da.astype(np.float32)
+        nodata_value = _pick_fill_value(da, fill_value)
+        if output_fill_value is None:
+            output_fill_value = nodata_value
+
+        rain_rate_data = dbz_to_rainrate(
+            da.values,
+            a=z_r_a,
+            b=z_r_b,
+            nodata_value=nodata_value if np.isfinite(nodata_value) else None,
+        )
+        rain_rate = xr.DataArray(
+            rain_rate_data,
+            dims=da.dims,
+            coords=da.coords,
+            name="rain_rate",
+        ).expand_dims(time=[time_values[idx]])
+        rain_rates.append(rain_rate)
+        if da_reference is None:
+            da_reference = da
+
+    if da_reference is None or output_fill_value is None:
+        raise ValueError("No input files were provided.")
+
+    rain_rate = xr.concat(rain_rates, dim="time")
     rain_rate.attrs.update(
         {
             "long_name": "rainfall_rate",
@@ -251,19 +275,22 @@ def convert_vmi_to_rain(
     ds = xr.Dataset(
         {
             "rain_rate": rain_rate,
-            "crs": xr.DataArray(0, attrs=_crs_attrs(da, grid_mapping_name, epsg_code)),
+            "crs": xr.DataArray(
+                0,
+                attrs=_crs_attrs(da_reference, grid_mapping_name, epsg_code),
+            ),
         },
         coords={
-            "time": ("time", np.array([time_value], dtype=np.int32)),
-            "latitude": ("latitude", da["latitude"].values),
-            "longitude": ("longitude", da["longitude"].values),
+            "time": ("time", time_values),
+            "latitude": ("latitude", da_reference["latitude"].values),
+            "longitude": ("longitude", da_reference["longitude"].values),
         },
         attrs={
             "Conventions": "CF-1.10",
             "title": f"{source_name} rainfall forcing",
             "institution": institution,
             "source": source,
-            "history": f"{dt.isoformat()}: produced/ingested",
+            "history": f"{dt_start.isoformat()}: produced/ingested",
         },
     )
 
@@ -289,21 +316,33 @@ def convert_vmi_to_rain(
         }
     )
 
-    encoding = {"rain_rate": {"_FillValue": fill_value}}
+    encoding = {"rain_rate": {"_FillValue": output_fill_value}}
     ds.to_netcdf(output_path, encoding=encoding)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Convert a weather radar VMI GeoTIFF to a CF-compliant rainfall NetCDF."
+        description="Convert weather radar VMI GeoTIFFs to a CF-compliant rainfall NetCDF."
     )
-    parser.add_argument("--input", required=True, help="Path to input VMI GeoTIFF")
+    parser.add_argument(
+        "--input",
+        required=True,
+        type=_parse_input_list,
+        help="Comma-separated list of input VMI GeoTIFFs (time-ordered).",
+    )
     parser.add_argument("--output", required=True, help="Path to output NetCDF")
     parser.add_argument(
         "--time",
         dest="timestamp",
-        default=None,
-        help="Timestamp for the raster (ISO-8601, defaults to now UTC)",
+        required=True,
+        help="Timestamp for the first raster (ISO-8601, e.g. 2025-03-25T14:00:00Z)",
+    )
+    parser.add_argument(
+        "--dt",
+        dest="dt_seconds",
+        type=float,
+        required=True,
+        help="Seconds between consecutive radar images",
     )
     parser.add_argument("--source-name", default="Radar", help="Source name for global title")
     parser.add_argument("--institution", default="Unknown", help="Institution metadata")
@@ -349,10 +388,14 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.dt_seconds <= 0:
+        raise ValueError("--dt must be a positive number of seconds.")
+
     convert_vmi_to_rain(
-        input_path=args.input,
+        input_paths=args.input,
         output_path=args.output,
         timestamp=args.timestamp,
+        dt_seconds=args.dt_seconds,
         source_name=args.source_name,
         institution=args.institution,
         source=args.source,

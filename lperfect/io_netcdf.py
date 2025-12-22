@@ -76,7 +76,6 @@ def write_results_netcdf_rank0(out_path: str, cfg: Dict[str, Any], dom: Domain, 
             "standard_name": "water_depth",  # execute statement
             "long_name": "flooded_water_depth",  # execute statement
             "units": "m",  # execute statement
-            "_FillValue": fill_value,  # execute statement
         },  # execute statement
     )  # execute statement
 
@@ -86,7 +85,6 @@ def write_results_netcdf_rank0(out_path: str, cfg: Dict[str, Any], dom: Domain, 
         attrs={  # set attrs
             "long_name": "hydrogeological_risk_index",  # execute statement
             "units": "1",  # execute statement
-            "_FillValue": fill_value,  # execute statement
         },  # execute statement
     )  # execute statement
 
@@ -122,12 +120,12 @@ def save_restart_netcdf_rank0(out_path: str, cfg: Dict[str, Any], dom: Domain,  
     ds["P_cum_mm"] = xr.DataArray(  # execute statement
         P_cum_mm_full.astype(np.float64),  # execute statement
         dims=(dom.y_name, dom.x_name),  # set dims
-        attrs={"long_name": "cumulative_precipitation", "units": "mm", "_FillValue": fill_value},  # execute statement
+        attrs={"long_name": "cumulative_precipitation", "units": "mm"},  # execute statement
     )  # execute statement
     ds["Q_cum_mm"] = xr.DataArray(  # execute statement
         Q_cum_mm_full.astype(np.float64),  # execute statement
         dims=(dom.y_name, dom.x_name),  # set dims
-        attrs={"long_name": "cumulative_runoff_depth", "units": "mm", "_FillValue": fill_value},  # execute statement
+        attrs={"long_name": "cumulative_runoff_depth", "units": "mm"},  # execute statement
     )  # execute statement
 
     ds["particle_r"] = xr.DataArray(particles_all.r.astype(np.int32), dims=("particle",), attrs={"units": "1"})  # execute statement

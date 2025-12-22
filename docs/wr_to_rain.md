@@ -20,10 +20,11 @@ If you see an error about missing `rioxarray`, install the missing dependencies 
 
 ## Inputs and behavior
 
-- **Input raster:** a single-band GeoTIFF (band 1 is used if multiple exist).
+- **Input rasters:** comma-separated list of single-band GeoTIFFs (band 1 is used if multiple exist).
 - **Dimensions:** accepts `x/y` or `latitude/longitude` and normalizes to `latitude/longitude`.
 - **Fill values:** uses `_FillValue` or `missing_value` from the raster when present; otherwise uses the CLI `--fill-value` fallback.
-- **Time:** use `--time` to provide an ISO-8601 timestamp. If omitted, the current UTC time is used.
+- **Time:** use `--time` to provide an ISO-8601 timestamp for the first raster. The script steps forward by `--dt` seconds for each input.
+- **Domain:** provide a domain NetCDF (`--domain`) that defines the target latitude/longitude grid.
 - **Z–R parameters:** uses `Z = a * R^b` to convert dBZ to rain rate with configurable `a` and `b`.
 
 ## Converting dBZ to rain rate
@@ -41,9 +42,11 @@ with `Z = 10^(dBZ / 10)`. The defaults (`a=200`, `b=1.6`) correspond to a Marsha
 
 ```bash
 python utils/wr_to_rain.py \
-  --input PATH/TO/input.tif \
+  --input PATH/TO/input_0000.tif,PATH/TO/input_0005.tif \
   --output PATH/TO/output.nc \
   --time 2024-06-01T12:00:00Z \
+  --dt 300 \
+  --domain PATH/TO/domain.nc \
   --source-name "Radar" \
   --institution "Your Institute" \
   --source "Radar VMI" \
@@ -51,14 +54,17 @@ python utils/wr_to_rain.py \
   --epsg EPSG:4326 \
   --fill-value -9999 \
   --z-r-a 200 \
-  --z-r-b 1.6
+  --z-r-b 1.6 \
+  --log-level INFO
 ```
 
 ### Arguments
 
-- `--input`: Path to the input VMI GeoTIFF.
+- `--input`: Comma-separated list of input VMI GeoTIFFs, in time order.
 - `--output`: Path for the output NetCDF.
-- `--time`: ISO-8601 timestamp (defaults to current UTC if omitted).
+- `--time`: ISO-8601 timestamp for the first raster.
+- `--dt`: Seconds between consecutive inputs.
+- `--domain`: Domain NetCDF (matching `cdl/domain.cdl`) used for regridding.
 - `--source-name`: Title prefix for the output dataset (defaults to `Radar`).
 - `--institution`: Institution metadata (defaults to `Unknown`).
 - `--source`: Source metadata (defaults to `radar`).
@@ -67,6 +73,7 @@ python utils/wr_to_rain.py \
 - `--fill-value`: Fallback fill value when the raster provides none.
 - `--z-r-a`: Z–R parameter `a` in `Z=a*R^b` (defaults to `200.0`).
 - `--z-r-b`: Z–R parameter `b` in `Z=a*R^b` (defaults to `1.6`).
+- `--log-level`: Logging level for console output (default: `INFO`).
 
 ## Example
 
@@ -74,9 +81,11 @@ Convert a radar GeoTIFF into a rain forcing file with explicit metadata:
 
 ```bash
 python utils/wr_to_rain.py \
-  --input data/radar/vmi_20240601_1200.tif \
+  --input data/radar/vmi_20240601_1200.tif,data/radar/vmi_20240601_1205.tif \
   --output data/rain/rain_20240601_1200.nc \
   --time 2024-06-01T12:00:00Z \
+  --dt 300 \
+  --domain data/domain/domain.nc \
   --source-name "Regional Radar" \
   --institution "Hydro-Meteorological Center" \
   --source "VMI radar product" \

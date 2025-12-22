@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timedelta, timezone
 import importlib.util
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -13,6 +14,7 @@ import xarray as xr
 
 
 TIME_UNITS = "hours since 1900-01-01 00:00:0.0"
+LOGGER = logging.getLogger(__name__)
 
 
 def dbz_to_rainrate(
@@ -74,6 +76,13 @@ def dbz_to_rainrate(
     R[R < 0] = np.nan
 
     return R
+
+
+def _setup_logging(level: str) -> None:
+    logging.basicConfig(
+        level=getattr(logging, level.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
 
 
 def _require_rioxarray() -> None:
@@ -217,6 +226,7 @@ def convert_vmi_to_rain(
     import rioxarray as rxr
 
     domain = _load_domain_reference(domain_path)
+    LOGGER.info("Loaded domain reference from %s", domain_path)
     dt_start = _parse_time(timestamp)
     time_values = np.array(
         [
@@ -230,6 +240,7 @@ def convert_vmi_to_rain(
     da_reference: Optional[xr.DataArray] = None
     output_fill_value: Optional[float] = None
     for idx, input_path in enumerate(input_paths):
+        LOGGER.info("Reading input raster %s (%d/%d)", input_path, idx + 1, len(input_paths))
         da = rxr.open_rasterio(input_path)
         if "band" in da.dims:
             if da.sizes["band"] < 1:
@@ -317,6 +328,7 @@ def convert_vmi_to_rain(
     )
 
     encoding = {"rain_rate": {"_FillValue": output_fill_value}}
+    LOGGER.info("Writing NetCDF output to %s", output_path)
     ds.to_netcdf(output_path, encoding=encoding)
 
 
@@ -343,6 +355,11 @@ def main() -> None:
         type=float,
         required=True,
         help="Seconds between consecutive radar images",
+    )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        help="Logging level (DEBUG, INFO, WARNING, ERROR)",
     )
     parser.add_argument("--source-name", default="Radar", help="Source name for global title")
     parser.add_argument("--institution", default="Unknown", help="Institution metadata")
@@ -387,6 +404,9 @@ def main() -> None:
         help="Z-R parameter b in Z=a*R^b (default: 1.6)",
     )
     args = parser.parse_args()
+
+    _setup_logging(args.log_level)
+    LOGGER.info("Starting VMI to rainfall conversion")
 
     if args.dt_seconds <= 0:
         raise ValueError("--dt must be a positive number of seconds.")

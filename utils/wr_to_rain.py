@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import importlib.util
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -144,6 +145,59 @@ def _pick_fill_value(da: xr.DataArray, default: float) -> float:
     return default
 
 
+def _load_domain_reference(domain_path: Optional[str]) -> Optional[xr.Dataset]:
+    resolved = Path(domain_path) if domain_path is not None else Path("cdl/domain.nc")
+    if not resolved.exists():
+        if domain_path is None:
+            return None
+        raise FileNotFoundError(f"Domain NetCDF not found: {resolved}")
+    return xr.open_dataset(resolved)
+
+
+def _template_from_domain(domain: xr.Dataset) -> xr.DataArray:
+    if "latitude" not in domain.coords or "longitude" not in domain.coords:
+        raise ValueError("Domain dataset must define latitude/longitude coordinates.")
+    if domain.data_vars:
+        template = next(iter(domain.data_vars.values()))
+        return template.drop_vars([name for name in template.coords if name not in ("latitude", "longitude")])
+    return xr.DataArray(
+        np.empty((domain.dims["latitude"], domain.dims["longitude"])),
+        coords={"latitude": domain["latitude"], "longitude": domain["longitude"]},
+        dims=("latitude", "longitude"),
+    )
+
+
+def _extract_domain_crs(domain: xr.Dataset) -> Optional[str]:
+    if "crs" not in domain:
+        return None
+    epsg_code = domain["crs"].attrs.get("epsg_code")
+    if epsg_code:
+        return str(epsg_code)
+    grid_mapping_name = domain["crs"].attrs.get("grid_mapping_name")
+    if grid_mapping_name:
+        return str(grid_mapping_name)
+    return None
+
+
+def _regrid_to_domain(da: xr.DataArray, domain: Optional[xr.Dataset]) -> xr.DataArray:
+    if domain is None:
+        return da
+    template = _template_from_domain(domain)
+    domain_crs = _extract_domain_crs(domain)
+    if domain_crs:
+        template = template.rio.write_crs(domain_crs, inplace=False)
+        if da.rio.crs is None:
+            da = da.rio.write_crs(domain_crs, inplace=False)
+    try:
+        return da.rio.reproject_match(template)
+    except Exception:
+        return da.interp(
+            latitude=domain["latitude"],
+            longitude=domain["longitude"],
+            method="nearest",
+        )
+
+
 def convert_vmi_to_rain(
     input_path: str,
     output_path: str,
@@ -153,6 +207,7 @@ def convert_vmi_to_rain(
     source: str,
     grid_mapping_name: Optional[str],
     epsg_code: Optional[str],
+    domain_path: Optional[str],
     fill_value: float,
     z_r_a: float,
     z_r_b: float,
@@ -167,6 +222,8 @@ def convert_vmi_to_rain(
         da = da.isel(band=0, drop=True)
     da = da.rename("rain_rate")
     da = _normalize_dims(da)
+    domain = _load_domain_reference(domain_path)
+    da = _regrid_to_domain(da, domain)
     da = da.astype(np.float32)
     fill_value = _pick_fill_value(da, fill_value)
     nodata_value = fill_value if np.isfinite(fill_value) else None
@@ -192,7 +249,6 @@ def convert_vmi_to_rain(
             "standard_name": "rainfall_rate",
             "units": "mm h-1",
             "grid_mapping": "crs",
-            "_FillValue": fill_value,
         }
     )
 
@@ -268,6 +324,11 @@ def main() -> None:
         help="Override EPSG code (e.g., EPSG:4326)",
     )
     parser.add_argument(
+        "--domain-nc",
+        default=None,
+        help="Optional domain NetCDF to regrid onto (expects latitude/longitude coords).",
+    )
+    parser.add_argument(
         "--fill-value",
         type=float,
         default=-9999.0,
@@ -298,6 +359,7 @@ def main() -> None:
         source=args.source,
         grid_mapping_name=args.grid_mapping_name,
         epsg_code=args.epsg_code,
+        domain_path=args.domain_nc,
         fill_value=args.fill_value,
         z_r_a=args.z_r_a,
         z_r_b=args.z_r_b,

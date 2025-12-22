@@ -141,6 +141,21 @@ def _pick_fill_value(da: xr.DataArray, default: float | int) -> float | int:
     return default
 
 
+def _coerce_int_fill(value: float | int | None, default: int) -> int:
+    if value is None:
+        return default
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not np.isfinite(numeric):
+        return default
+    info = np.iinfo(np.int32)
+    if numeric < info.min or numeric > info.max:
+        return default
+    return int(numeric)
+
+
 def _coord_attrs(name: str, src_attrs: dict) -> dict:
     attrs = dict(src_attrs)
     lname = name.lower()
@@ -309,10 +324,10 @@ def build_domain(
                 latitude_name: y_coord,
             }
         )
-        fill_d8 = _pick_fill_value(d8_da if d8_path else dem_da, -9999)
+        fill_d8 = _coerce_int_fill(_pick_fill_value(d8_da if d8_path else dem_da, -9999), -9999)
         fill_cn = _pick_fill_value(cn_da if cn_path else dem_da, -9999.0)
         if mask_da is not None:
-            fill_mask = _pick_fill_value(mask_da, 0)
+            fill_mask = _coerce_int_fill(_pick_fill_value(mask_da, 0), 0)
         progress.update(1)
 
         progress.set_description("Writing variables")

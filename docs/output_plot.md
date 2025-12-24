@@ -1,4 +1,4 @@
-# `utils/plot_flood_depth.py` — Plot LPERFECT flood depth over DEM hillshade
+# `utils/output_plot.py` — Plot LPERFECT flood depth over DEM hillshade
 
 This script creates a map figure by combining:
 - **Hillshade** from a DEM (domain NetCDF), and
@@ -35,12 +35,12 @@ pip install geopandas shapely
 
 Interactive display:
 ```bash
-python utils/plot_flood_depth.py --flood data/flood_depth.nc --domain data/domain.nc --time-index 0
+python utils/output_plot.py --flood data/flood_depth.nc --domain data/domain.nc --time-index 0
 ```
 
 Save PNG:
 ```bash
-python utils/plot_flood_depth.py --flood data/flood_depth.nc --domain data/domain.nc --time-index 0 --out outputs/flood.png
+python utils/output_plot.py --flood data/flood_depth.nc --domain data/domain.nc --time-index 0 --out outputs/flood.png
 ```
 
 ---
@@ -49,7 +49,7 @@ python utils/plot_flood_depth.py --flood data/flood_depth.nc --domain data/domai
 
 Mask shallow flooding (e.g., 5 cm) and use percentile contrast:
 ```bash
-python utils/plot_flood_depth.py \
+python utils/output_plot.py \
   --flood data/flood_depth.nc \
   --domain data/domain.nc \
   --threshold 0.05 \
@@ -59,7 +59,7 @@ python utils/plot_flood_depth.py \
 
 Log scale for wide depth ranges:
 ```bash
-python utils/plot_flood_depth.py \
+python utils/output_plot.py \
   --flood data/flood_depth.nc \
   --domain data/domain.nc \
   --log-scale \
@@ -73,7 +73,7 @@ python utils/plot_flood_depth.py \
 Default is `--regrid flood_to_dem` (flood interpolated onto DEM grid), which is usually safest for visual alignment.
 
 ```bash
-python utils/plot_flood_depth.py \
+python utils/output_plot.py \
   --flood data/flood_depth.nc \
   --domain data/domain.nc \
   --regrid flood_to_dem \
@@ -90,7 +90,7 @@ Options:
 ## Batch mode (one PNG per time step)
 
 ```bash
-python utils/plot_flood_depth.py \
+python utils/output_plot.py \
   --flood data/flood_depth.nc \
   --domain data/domain.nc \
   --all-times \
@@ -109,7 +109,7 @@ ffmpeg -framerate 5 -i outputs/frames/flood_depth_t%03d.png -pix_fmt yuv420p out
 
 ```bash
 pip install geopandas shapely
-python utils/plot_flood_depth.py \
+python utils/output_plot.py \
   --flood data/flood_depth.nc \
   --domain data/domain.nc \
   --overlay data/boundaries.geojson \

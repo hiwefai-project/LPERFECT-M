@@ -54,8 +54,8 @@ def cell_area_m2_from_domain(ds: xr.Dataset, x_name: str, y_name: str) -> float 
         return float(dx * dy)  # return float(dx * dy)
 
     # Geographic degrees case -> compute per-row areas.
-    H = int(ds.dims[y_name])  # set H
-    W = int(ds.dims[x_name])  # set W
+    H = int(ds.sizes[y_name])  # set H
+    W = int(ds.sizes[x_name])  # set W
 
     # Try pyproj Geod for accurate ellipsoidal area.
     try:  # start exception handling
@@ -106,16 +106,22 @@ def read_domain_netcdf_rank0(cfg: Dict[str, Any]) -> Domain:  # define function 
 
     # Read arrays.
     dem = np.asarray(ds[dem_name].values).astype(np.float64)  # set dem
-    d8 = np.asarray(ds[d8_name].values).astype(np.int32)  # set d8
+    active_mask = np.isfinite(dem)  # set active_mask
+
+    d8_da = ds[d8_name]  # set d8_da
+    d8_raw = np.asarray(d8_da.values)  # set d8_raw
+    d8_fill = d8_da.attrs.get("_FillValue", None)  # set d8_fill
+    d8_mask = ~np.isfinite(d8_raw)  # set d8_mask
+    if d8_fill is not None:  # check condition d8_fill is not None:
+        d8_mask |= d8_raw == d8_fill  # execute statement
+    d8_clean = np.where(d8_mask, 0, d8_raw)  # set d8_clean
+    d8 = np.where(active_mask, d8_clean, 0).astype(np.int32)  # set d8
     cn = np.asarray(ds[cn_name].values).astype(np.float64)  # set cn
 
     # Optional channel mask.
     channel_mask = None  # set channel_mask
     if ch_name in ds:  # check condition ch_name in ds:
         channel_mask = (np.asarray(ds[ch_name].values) > 0)  # set channel_mask
-
-    # Active mask based on valid DEM values.
-    active_mask = np.isfinite(dem)  # set active_mask
 
     # Resolve coordinate names.
     x_name = varmap.get("x", "x")  # set x_name

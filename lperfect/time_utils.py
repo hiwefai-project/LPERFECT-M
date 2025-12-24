@@ -37,8 +37,11 @@ def parse_iso8601_to_datetime64(s: str | None) -> np.datetime64 | None:  # defin
     # Replace Z with explicit UTC offset for numpy.
     if ss.endswith("Z"):  # check condition ss.endswith("Z"):
         ss = ss[:-1] + "+00:00"  # set ss
-    # Convert to numpy datetime64 (timezone-aware strings are accepted by numpy).
-    return np.datetime64(ss)  # return np.datetime64(ss)
+    # Parse to aware datetime, convert to UTC, drop tzinfo (numpy has no tz support).
+    dt = datetime.fromisoformat(ss)  # set dt
+    dt_utc = dt.astimezone(timezone.utc).replace(tzinfo=None)  # set dt_utc
+    # Convert to numpy datetime64 without emitting timezone warnings.
+    return np.datetime64(dt_utc)  # return np.datetime64(dt_utc)
 
 
 def datetime_to_hours_since_1900(dt: datetime) -> int:  # define function datetime_to_hours_since_1900

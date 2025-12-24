@@ -50,7 +50,9 @@ from .domain import Domain  # import .domain import Domain
 logger = logging.getLogger("lperfect")  # set logger
 
 
-def run_simulation(comm: Any, rank: int, size: int, cfg: Dict[str, Any], dom: Domain) -> None:  # define function run_simulation
+def run_simulation(
+    comm: Any, rank: int, size: int, cfg: Dict[str, Any], dom: Domain, domain_label: str | None = None
+) -> None:  # define function run_simulation
     """Run the full LPERFECT simulation (serial or MPI)."""  # execute statement
 
     # ------------------------------

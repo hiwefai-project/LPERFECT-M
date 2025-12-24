@@ -5,6 +5,11 @@ from existing rasters/NetCDF inputs. It can crop to a bounding box, resample to 
 requested resolution, and compute D8 flow directions directly from the DEM when
 no D8 input is provided.
 
+Run the utility multiple times to prepare **nested domains** (e.g., 90 m national, 30 m regional,
+10 m city) and list them under the `domains` array in `config.json`. Each domain will be simulated
+independently with consistent hydrological/numerical settings and the same MPI/shared-memory
+parallelization layout.
+
 ---
 
 ## 1. What it Produces

@@ -20,6 +20,13 @@ import logging
 # Import stdlib helpers.
 import importlib.util
 import sys
+from copy import deepcopy
+from pathlib import Path
+import re
+from typing import Any, Dict, List
+
+# Import lightweight config helpers early for shared utilities.
+from lperfect.config import deep_update, default_config, load_json
 
 
 def _require_numpy() -> None:
@@ -31,12 +38,79 @@ def _require_numpy() -> None:
         )
 
 
+def _slugify(label: str) -> str:
+    """Return a filesystem-friendly slug for a domain label."""
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", label).strip("-").lower()
+    return slug or "domain"
+
+
+def _tag_path(path: str | None, label: str) -> str | None:
+    """Append a domain label suffix to a path while preserving extension."""
+    if not path:
+        return None
+    p = Path(str(path))
+    suffix = p.suffix or ""
+    return str(p.with_name(f"{p.stem}_{label}{suffix}"))
+
+
+def _normalize_domain_entries(cfg: Dict[str, Any], default_domain: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return a list of domain configuration dictionaries."""
+    domains_cfg = cfg.get("domains", None)
+    if domains_cfg is None:
+        domains_cfg = default_domain
+
+    if isinstance(domains_cfg, dict):
+        domains_list = [domains_cfg]
+    elif isinstance(domains_cfg, list):
+        domains_list = domains_cfg
+    else:
+        raise ValueError("domain/domains config must be an object or list of objects")
+
+    resolved: List[Dict[str, Any]] = []
+    for idx, dom_cfg in enumerate(domains_list):
+        merged = deepcopy(default_domain)
+        if not isinstance(dom_cfg, dict):
+            raise ValueError("Each domain entry must be an object")
+        merged = deep_update(merged, dom_cfg)
+        name = merged.get("name") or merged.get("id") or f"domain_{idx + 1}"
+        merged.setdefault("name", name)
+        resolved.append(merged)
+    return resolved
+
+
+def _prepare_domain_run_config(
+    base_cfg: Dict[str, Any],
+    dom_cfg: Dict[str, Any],
+    label_slug: str,
+    ndomains: int,
+) -> Dict[str, Any]:
+    """Clone the base config and apply domain-specific overrides and tagging."""
+
+    run_cfg = deepcopy(base_cfg)
+    run_cfg["domain"] = dom_cfg
+    run_cfg.pop("domains", None)
+
+    # Allow per-domain overrides for output/restart while keeping defaults.
+    run_cfg["output"] = deep_update(run_cfg.get("output", {}), dom_cfg.get("output", {}))
+    run_cfg["restart"] = deep_update(run_cfg.get("restart", {}), dom_cfg.get("restart", {}))
+
+    # Enforce distinct artifacts when running multiple domains.
+    if ndomains > 1:
+        if "output" not in dom_cfg or "out_netcdf" not in dom_cfg.get("output", {}):
+            run_cfg["output"]["out_netcdf"] = _tag_path(run_cfg["output"].get("out_netcdf"), label_slug)
+        if "restart" not in dom_cfg or "out" not in dom_cfg.get("restart", {}):
+            run_cfg["restart"]["out"] = _tag_path(run_cfg["restart"].get("out"), label_slug)
+        if "restart" not in dom_cfg or "in" not in dom_cfg.get("restart", {}):
+            run_cfg["restart"]["in"] = _tag_path(run_cfg["restart"].get("in"), label_slug)
+        if "output" not in dom_cfg or "outflow_geojson" not in dom_cfg.get("output", {}):
+            run_cfg["output"]["outflow_geojson"] = _tag_path(run_cfg["output"].get("outflow_geojson"), label_slug)
+
+    return run_cfg
+
+
 def main() -> None:
     """Program entry point."""
     _require_numpy()
-
-    # Import config helpers.
-    from lperfect.config import default_config, load_json, deep_update
 
     # Import CLI parser.
     from lperfect.cli import parse_args
@@ -100,40 +174,53 @@ def main() -> None:
     if args.travel_time_max is not None:
         cfg["model"].setdefault("travel_time_auto", {})["max_s"] = args.travel_time_max
 
-    # Enforce NetCDF-only domain input.
-    if cfg.get("domain", {}).get("mode", "netcdf") != "netcdf":
-        # Raise a clear error early if an unsupported domain mode is used.
-        raise ValueError("LPERFECT is NetCDF-only: domain.mode must be 'netcdf'.")
+    # Normalize domains (support single domain object or list under cfg['domains']).
+    default_domain_cfg = cfg.get("domain", {})
+    domains = _normalize_domain_entries(cfg, default_domain_cfg)
+    ndomains = len(domains)
+    if ndomains == 0:
+        raise ValueError("At least one domain must be configured.")
 
-    # Load domain (rank0) and broadcast if running under MPI.
-    if size > 1:
-        # In MPI, only rank 0 does I/O to avoid contention.
-        if rank == 0:
-            # Read the NetCDF domain file on the root rank.
-            dom0 = read_domain_netcdf_rank0(cfg)
-            # Log the domain shape for visibility.
-            logger.info("Domain loaded (rank0): %s", dom0.dem.shape)
+    for idx, dom_cfg in enumerate(domains):
+        domain_label = str(dom_cfg.get("name", f"domain_{idx + 1}"))
+        label_slug = _slugify(domain_label)
+        run_cfg = _prepare_domain_run_config(cfg, dom_cfg, label_slug, ndomains)
+
+        # Enforce NetCDF-only domain input.
+        if run_cfg.get("domain", {}).get("mode", "netcdf") != "netcdf":
+            raise ValueError("LPERFECT is NetCDF-only: domain.mode must be 'netcdf'.")
+
+        # Load domain (rank0) and broadcast if running under MPI.
+        if size > 1:
+            # In MPI, only rank 0 does I/O to avoid contention.
+            if rank == 0:
+                dom0 = read_domain_netcdf_rank0(run_cfg)
+                logger.info("Domain '%s' loaded (rank0): %s", domain_label, dom0.dem.shape)
+            else:
+                dom0 = None
+            dom = bcast_domain(comm, dom0)  # type: ignore[arg-type]
         else:
-            # Non-root ranks hold a placeholder until broadcast.
-            dom0 = None
-        # Broadcast the domain object from rank 0 to all ranks.
-        dom = bcast_domain(comm, dom0)  # type: ignore[arg-type]
-    else:
-        # In serial, read the domain directly.
-        dom = read_domain_netcdf_rank0(cfg)
-        # Log the domain shape for visibility.
-        logger.info("Domain loaded (serial): %s", dom.dem.shape)
+            dom = read_domain_netcdf_rank0(run_cfg)
+            logger.info("Domain '%s' loaded (serial): %s", domain_label, dom.dem.shape)
 
-    # Run the main simulation driver with the loaded configuration and domain.
-    run_simulation(comm, rank, size, cfg, dom)
+        if rank == 0:
+            logger.info(
+                "Starting simulation for domain '%s' (%d/%d)",
+                domain_label,
+                idx + 1,
+                ndomains,
+            )
 
-    # Close cached NetCDF rain datasets to free resources.
-    xr_close_cache()
+        # Run the main simulation driver with the loaded configuration and domain.
+        run_simulation(comm, rank, size, run_cfg, dom, domain_label=domain_label)
+
+        # Close cached NetCDF rain datasets to free resources between domains.
+        xr_close_cache()
 
     # Emit a final log line on rank 0.
     if rank == 0:
         # Signal successful completion.
-        logger.info("LPERFECT finished.")
+        logger.info("LPERFECT finished across %d domain(s).", ndomains)
 
 
 if __name__ == "__main__":

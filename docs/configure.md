@@ -130,26 +130,35 @@ You can shorten this file by including only the fields you want to override.
 
 ---
 
-## `domain` section
+## `domain` / `domains` sections
 
-Controls where the spatial domain is loaded from and how variables are mapped.
+Controls where the spatial domain is loaded from and how variables are mapped. You can:
+
+1. Provide a single `domain` object (backwards compatible).
+2. Provide a `domains` array to run multiple nested grids in sequence (e.g., national 90 m, regional 30 m, city 10 m). Each domain keeps the same hierarchical / heterogeneous parallelization scheme already used by LPERFECT; the model is executed once per domain with the same numerical and hydrological settings.
+
+Common keys for each domain object:
 
 | Key | Default | Description | Example |
 | --- | --- | --- | --- |
-| `domain.mode` | `netcdf` | Domain input format. Currently only NetCDF is supported. | `"mode": "netcdf"` |
-| `domain.domain_nc` | `domain.nc` | Path to the domain NetCDF file. | `"domain_nc": "data/domain.nc"` |
-| `domain.varmap.dem` | `dem` | Variable name for DEM (elevation). | `"dem": "elevation"` |
-| `domain.varmap.d8` | `d8` | Variable name for D8 flow directions. | `"d8": "flowdir"` |
-| `domain.varmap.cn` | `cn` | Variable name for Curve Number grid. | `"cn": "curve_number"` |
-| `domain.varmap.channel_mask` | `channel_mask` | Variable name for channel mask (optional). | `"channel_mask": "river_mask"` |
-| `domain.varmap.x` | `x` | Coordinate name for the x/longitude axis. | `"x": "longitude"` |
-| `domain.varmap.y` | `y` | Coordinate name for the y/latitude axis. | `"y": "latitude"` |
+| `mode` | `netcdf` | Domain input format. Currently only NetCDF is supported. | `"mode": "netcdf"` |
+| `domain_nc` | `domain.nc` | Path to the domain NetCDF file. | `"domain_nc": "data/domain_30m.nc"` |
+| `varmap.dem` | `dem` | Variable name for DEM (elevation). | `"dem": "elevation"` |
+| `varmap.d8` | `d8` | Variable name for D8 flow directions. | `"d8": "flowdir"` |
+| `varmap.cn` | `cn` | Variable name for Curve Number grid. | `"cn": "curve_number"` |
+| `varmap.channel_mask` | `channel_mask` | Variable name for channel mask (optional). | `"channel_mask": "river_mask"` |
+| `varmap.x` | `longitude` | Coordinate name for the x/longitude axis. | `"x": "longitude"` |
+| `varmap.y` | `latitude` | Coordinate name for the y/latitude axis. | `"y": "latitude"` |
+| `name` | `domain_1`, … | Human-readable label used for logging and automatic file suffixes. | `"name": "city_10m"` |
+| `output.out_netcdf` | inherited | Output NetCDF path for this domain; if omitted in multi-domain runs it is auto-suffixed by the domain name. | `"out_netcdf": "flood_depth_30m.nc"` |
+| `restart.out` | inherited | Restart file to write for this domain; auto-suffixed when running multiple domains unless explicitly set. | `"out": "restart_10m.nc"` |
+| `restart.in` | inherited | Restart file to read for this domain; auto-suffixed when running multiple domains unless explicitly set. | `"in": "restart_10m.nc"` |
 
 > Note: The provided CDL templates use `latitude`/`longitude` coordinate names. If you
-> follow those templates, set `domain.varmap.x = "longitude"` and
-> `domain.varmap.y = "latitude"` (or rename the coordinates in your NetCDF).
+> follow those templates, set `varmap.x = "longitude"` and
+> `varmap.y = "latitude"` (or rename the coordinates in your NetCDF).
 
-**Example:**
+**Single-domain example:**
 
 ```json
 {
@@ -163,6 +172,34 @@ Controls where the spatial domain is loaded from and how variables are mapped.
       "y": "latitude"
     }
   }
+}
+```
+
+**Nested domains example (90 m → 30 m → 10 m):**
+
+```json
+{
+  "domain": { "varmap": { "x": "longitude", "y": "latitude" } },
+  "domains": [
+    {
+      "name": "national_90m",
+      "domain_nc": "domain_90m.nc",
+      "output": { "out_netcdf": "flood_depth_90m.nc" },
+      "restart": { "out": "restart_90m.nc" }
+    },
+    {
+      "name": "regional_30m",
+      "domain_nc": "domain_30m.nc",
+      "output": { "out_netcdf": "flood_depth_30m.nc" },
+      "restart": { "out": "restart_30m.nc" }
+    },
+    {
+      "name": "city_10m",
+      "domain_nc": "domain_10m.nc",
+      "output": { "out_netcdf": "flood_depth_10m.nc" },
+      "restart": { "out": "restart_10m.nc" }
+    }
+  ]
 }
 ```
 

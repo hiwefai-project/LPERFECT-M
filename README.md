@@ -40,6 +40,20 @@ python main.py --config config.json
 python main.py --config config.json --device gpu
 ```
 
+### Shared-memory parallelism (optional, per rank)
+Enable threaded particle advection/aggregation inside each rank via the config:
+```json
+{
+  "compute": {
+    "shared_memory": {
+      "enabled": true,
+      "workers": 8,
+      "min_particles_per_worker": 20000
+    }
+  }
+}
+```
+
 ### MPI
 ```bash
 mpirun -np 8 python main.py --config config.json
@@ -105,6 +119,7 @@ Particles hop along D8 with travel-time gating.
 MPI mode uses:
 - **slab decomposition** (contiguous row blocks per rank)
 - **particle migration** via `Alltoallv` after advection
+- **optional shared-memory threads** per rank to accelerate particle advection and slab accumulation (independent of GPU/MPI)
 - **rank0-only I/O** (domain read, rain read, restart+output writes)
 
 ## Restart usage

@@ -22,6 +22,7 @@ from .hydraulics import spawn_particles_from_runoff_slab, advect_particles_one_s
 from .particles import Particles, empty_particles, concat_particles  # import .particles import Particles, empty_particles, concat_particles
 from .risk import compute_flow_accum_area_m2, compute_risk_index  # import .risk import compute_flow_accum_area_m2, compute_risk_index
 from .io_netcdf import write_results_netcdf_rank0, save_restart_netcdf_rank0, load_restart_netcdf_rank0  # import .io_netcdf import write_results_netcdf_rank0, save_restart_netcdf_rank0, load_restart_netcdf_rank0
+from .shared_memory import SharedMemoryConfig  # import .shared_memory import SharedMemoryConfig
 
 # Import MPI helpers.
 from .mpi_utils import (  # import .mpi_utils import (
@@ -68,6 +69,14 @@ def run_simulation(comm: Any, rank: int, size: int, cfg: Dict[str, Any], dom: Do
         device = "cpu"  # set device
     if rank == 0:  # check condition rank == 0:
         logger.info("Compute device: %s", device)  # execute statement
+    shared_cfg = SharedMemoryConfig.from_dict(compute_cfg.get("shared_memory", {}))  # set shared_cfg
+    if rank == 0 and shared_cfg.enabled and shared_cfg.workers > 1:  # check condition rank == 0 and shared_cfg.enabled and shared_cfg.workers > 1:
+        logger.info(
+            "Shared-memory parallelism: enabled with %d workers (chunk=%d, min_particles=%d)",
+            shared_cfg.workers,
+            shared_cfg.chunk_size,
+            shared_cfg.min_particles_per_worker,
+        )  # execute statement
 
     # Start time for time-aware rain selection.
     start_time = parse_iso8601_to_datetime64(mcfg.get("start_time", None))  # set start_time
@@ -224,6 +233,7 @@ def run_simulation(comm: Any, rank: int, size: int, cfg: Dict[str, Any], dom: Do
             travel_time_channel_s=travel_time_channel_s,  # set travel_time_channel_s
             channel_mask=dom.channel_mask,  # set channel_mask
             outflow_sink=outflow_sink,  # set outflow_sink
+            shared_cfg=shared_cfg,  # set shared_cfg
         )  # execute statement
 
         # Migrate particles between slabs (MPI).
@@ -311,7 +321,7 @@ def run_simulation(comm: Any, rank: int, size: int, cfg: Dict[str, Any], dom: Do
     do_risk = bool(risk_cfg.get("enabled", True))  # set do_risk
 
     if size == 1:  # check condition size == 1:
-        volgrid = local_volgrid_from_particles_slab(particles, r0=0, r1=nrows, ncols=ncols)  # set volgrid
+        volgrid = local_volgrid_from_particles_slab(particles, r0=0, r1=nrows, ncols=ncols, shared_cfg=shared_cfg)  # set volgrid
         if np.isscalar(dom.cell_area_m2):  # check condition np.isscalar(dom.cell_area_m2):
             flood = volgrid / float(dom.cell_area_m2)  # set flood
         else:  # fallback branch
@@ -335,7 +345,7 @@ def run_simulation(comm: Any, rank: int, size: int, cfg: Dict[str, Any], dom: Do
 
     else:  # fallback branch
         Q_full = gather_field_slab_to_rank0(comm, Q_slab, nrows, ncols)  # set Q_full
-        volgrid_slab = local_volgrid_from_particles_slab(particles, r0=r0, r1=r1, ncols=ncols)  # set volgrid_slab
+        volgrid_slab = local_volgrid_from_particles_slab(particles, r0=r0, r1=r1, ncols=ncols, shared_cfg=shared_cfg)  # set volgrid_slab
         vol_full = gather_field_slab_to_rank0(comm, volgrid_slab, nrows, ncols)  # set vol_full
 
         if rank == 0:  # check condition rank == 0:

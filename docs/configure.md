@@ -160,13 +160,23 @@ and gracefully falls back to CPU if CuPy is missing.
 | Key | Default | Description | Example |
 | --- | --- | --- | --- |
 | `compute.device` | `cpu` | Compute device (`cpu` or `gpu`). | `"device": "gpu"` |
+| `compute.shared_memory.enabled` | `false` | Enable shared-memory parallelism inside each rank. | `"enabled": true` |
+| `compute.shared_memory.workers` | `null` | Worker threads (defaults to CPU cores when `null`). | `"workers": 8` |
+| `compute.shared_memory.min_particles_per_worker` | `5000` | Minimum local particles before parallelizing (prevents overhead on small runs). | `20000` |
+| `compute.shared_memory.chunk_size` | `65536` | Particle chunk size per task (tune for memory/cache). | `131072` |
 
 **Example:**
 
 ```json
 {
   "compute": {
-    "device": "gpu"
+    "device": "gpu",
+    "shared_memory": {
+      "enabled": true,
+      "workers": 8,
+      "min_particles_per_worker": 20000,
+      "chunk_size": 131072
+    }
   }
 }
 ```

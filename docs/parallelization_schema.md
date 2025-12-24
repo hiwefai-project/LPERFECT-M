@@ -1,7 +1,7 @@
 # Parallelization Schema (MPI + GPU)
 
 This document summarizes how LPERFECT-M parallelizes work across distributed-memory (MPI)
-processes and how GPU acceleration is applied within each rank when available.
+processes, uses shared-memory threads within each rank, and how GPU acceleration is applied when available.
 
 ---
 
@@ -62,7 +62,25 @@ If the GPU device is requested but CuPy is unavailable:
 
 ---
 
-## 3. Hybrid MPI + GPU Execution
+## 3. Shared-Memory Parallelism (Per Rank)
+
+LPERFECT-M can accelerate CPU-bound sections inside each rank using **threaded shared-memory**
+parallelism. This targets particle advection and slab accumulation, which complements GPU
+acceleration (runoff) without requiring a GPU.
+
+- Enable via `compute.shared_memory.enabled = true`.
+- Configure worker threads with `compute.shared_memory.workers` (defaults to CPU cores).
+- Guardrails: `min_particles_per_worker` avoids overhead on small local particle counts, and
+  `chunk_size` tunes per-task batch size for cache efficiency.
+- Results are **deterministic**: chunks are concatenated in submission order to preserve
+  reproducibility while reducing contention.
+
+Shared-memory threading is independent of GPU usage: you can run CPU-only (threads),
+GPU-only, or combine GPU runoff with threaded particle routing on the host.
+
+---
+
+## 4. Hybrid MPI + GPU Execution
 
 For hybrid runs:
 
@@ -79,8 +97,9 @@ mpirun -np 4 python main.py --config config.json --device gpu
 
 ---
 
-## 4. Summary
+## 5. Summary
 
 - **MPI** distributes the grid by row slabs and migrates particles across boundaries.
+- **Shared-memory threads** speed up particle advection and slab accumulation within each rank.
 - **GPU** acceleration (via CuPy) speeds up runoff calculations within each rank.
 - **I/O** is centralized on rank 0 for simplicity and CF-compliant NetCDF outputs.

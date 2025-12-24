@@ -21,6 +21,7 @@ import argparse
 import json
 import logging
 import math
+from pathlib import Path
 from typing import Any, Dict, Tuple, Optional
 
 import numpy as np
@@ -158,6 +159,38 @@ def classify_risk_r1_r4(
         return "R4"
 
     return None
+
+
+def _load_geojson_feature_collection(path: str) -> Dict[str, Any]:
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Input GeoJSON not found: {path}")
+
+    try:
+        raw_text = p.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise OSError(f"Failed to read GeoJSON '{path}': {exc}") from exc
+
+    if not raw_text.strip():
+        raise ValueError(f"Input GeoJSON '{path}' is empty.")
+
+    try:
+        gj = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Invalid GeoJSON in '{path}': {exc.msg} (line {exc.lineno} column {exc.colno})"
+        ) from exc
+
+    if gj.get("type") != "FeatureCollection":
+        raise ValueError("Input GeoJSON must be a FeatureCollection.")
+
+    feats = gj.get("features")
+    if feats is None:
+        raise ValueError("Input GeoJSON FeatureCollection must contain a 'features' array.")
+    if not isinstance(feats, list):
+        raise ValueError("GeoJSON 'features' must be a list.")
+
+    return gj
 
 
 def compute_area_stats(
@@ -322,10 +355,7 @@ def main() -> int:
     fill_risk = ds[RISK_NAME].attrs.get("_FillValue", None)
 
     LOG.info("Loading GeoJSON: %s", args.geojson_in)
-    with open(args.geojson_in, "r", encoding="utf-8") as f:
-        gj = json.load(f)
-    if gj.get("type") != "FeatureCollection":
-        raise ValueError("Input GeoJSON must be a FeatureCollection.")
+    gj = _load_geojson_feature_collection(args.geojson_in)
 
     feats = gj.get("features") or []
     updated, skipped = 0, 0

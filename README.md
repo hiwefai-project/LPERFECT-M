@@ -114,7 +114,7 @@ LPERFECT uses cumulative SCS-CN:
 
 ### Lagrangian routing
 Incremental runoff is converted into **particles** (small fixed water volumes).  
-Particles hop along D8 with travel-time gating.
+Particles hop along D8 with travel-time gating; travel times can be fixed scalars or automatically derived from cell area plus representative hillslope/channel velocities (with configurable bounds).
 
 ### Parallelization
 MPI mode uses:

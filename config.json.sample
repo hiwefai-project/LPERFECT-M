@@ -20,6 +20,13 @@
     "particle_vol_m3": 0.25,
     "travel_time_s": 5,
     "travel_time_channel_s": 1,
+    "travel_time_mode": "fixed",
+    "travel_time_auto": {
+      "hillslope_velocity_ms": 0.5,
+      "channel_velocity_ms": 1.5,
+      "min_s": 0.25,
+      "max_s": 3600.0
+    },
     "outflow_sink": true,
     "log_every": 10
   },

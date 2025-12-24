@@ -55,8 +55,10 @@ def run_simulation(comm: Any, rank: int, size: int, cfg: Dict[str, Any], dom: Do
     encoding = str(mcfg["encoding"])                           # D8 encoding.  # set encoding
     ia_ratio = float(mcfg["ia_ratio"])                         # Initial abstraction ratio.  # set ia_ratio
     particle_vol_m3 = float(mcfg["particle_vol_m3"])           # Target particle volume.  # set particle_vol_m3
-    travel_time_s = float(mcfg["travel_time_s"])               # Hillslope hop time.  # set travel_time_s
-    travel_time_channel_s = float(mcfg["travel_time_channel_s"])# Channel hop time.  # set travel_time_channel_s
+    travel_time_mode = str(mcfg.get("travel_time_mode", "fixed")).lower().strip()  # Travel time mode.  # set travel_time_mode
+    travel_time_s_cfg = float(mcfg["travel_time_s"])            # Hillslope hop time (fixed).  # set travel_time_s_cfg
+    travel_time_channel_s_cfg = float(mcfg["travel_time_channel_s"])  # Channel hop time (fixed).  # set travel_time_channel_s_cfg
+    travel_time_auto_cfg = mcfg.get("travel_time_auto", {})     # Auto travel-time config.  # set travel_time_auto_cfg
     outflow_sink = bool(mcfg["outflow_sink"])                  # Drop particles leaving domain.  # set outflow_sink
     log_every = int(mcfg.get("log_every", 10))                 # Diagnostics frequency.  # set log_every
 
@@ -86,6 +88,57 @@ def run_simulation(comm: Any, rank: int, size: int, cfg: Dict[str, Any], dom: Do
 
     # Precompute downstream lookup (replicated).
     valid, ds_r, ds_c = build_downstream_index(dom.d8, encoding)  # set valid, ds_r, ds_c
+
+    def _compute_hop_distances(cell_area_m2: float | np.ndarray) -> np.ndarray:
+        """Approximate hop distances (m) using cell area and downstream orientation."""
+        nrows_loc, ncols_loc = valid.shape
+        rr, cc = np.indices((nrows_loc, ncols_loc))
+        dr = ds_r - rr
+        dc = ds_c - cc
+        diag = (np.abs(dr) == 1) & (np.abs(dc) == 1) & valid
+        orth = valid & ~diag
+
+        if np.isscalar(cell_area_m2):
+            base = float(np.sqrt(cell_area_m2))
+            dist = np.zeros_like(valid, dtype=np.float64)
+            dist[orth] = base
+            dist[diag] = base * np.sqrt(2.0)
+            return dist
+
+        base = np.sqrt(cell_area_m2.astype(np.float64))
+        dist = np.zeros_like(base, dtype=np.float64)
+        dist[orth] = base[orth]
+        dist[diag] = base[diag] * np.sqrt(2.0)
+        return dist
+
+    def _compute_auto_travel_times() -> tuple[np.ndarray, np.ndarray]:
+        """Derive hop travel times from velocities and geometry."""
+        vel_hill = float(travel_time_auto_cfg.get("hillslope_velocity_ms", 0.5))
+        vel_ch = float(travel_time_auto_cfg.get("channel_velocity_ms", 1.5))
+        min_s = float(travel_time_auto_cfg.get("min_s", 0.25))
+        max_s = float(travel_time_auto_cfg.get("max_s", 3600.0))
+
+        if vel_hill <= 0.0 or vel_ch <= 0.0:
+            raise ValueError("travel_time_auto velocities must be positive.")
+
+        dist = _compute_hop_distances(dom.cell_area_m2)
+        hill = np.clip(dist / vel_hill, min_s, max_s)
+        ch = np.clip(dist / vel_ch, min_s, max_s)
+        return hill, ch
+
+    if travel_time_mode == "auto":
+        travel_time_s, travel_time_channel_s = _compute_auto_travel_times()  # set travel_time_s
+        if rank == 0:
+            logger.info(
+                "Travel time mode=auto: hillslope median=%.3fs channel median=%.3fs",
+                float(np.median(travel_time_s[valid])),
+                float(np.median(travel_time_channel_s[valid])),
+            )
+    elif travel_time_mode == "fixed":
+        travel_time_s = travel_time_s_cfg  # set travel_time_s
+        travel_time_channel_s = travel_time_channel_s_cfg  # set travel_time_channel_s
+    else:
+        raise ValueError(f"Unknown travel_time_mode '{travel_time_mode}'. Use 'fixed' or 'auto'.")
 
     # Rain sources configuration (replicated config, rank0 reads files).
     rain_sources = build_rain_sources(cfg)  # set rain_sources

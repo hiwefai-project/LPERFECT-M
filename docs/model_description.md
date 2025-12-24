@@ -99,7 +99,8 @@ Two common encodings are supported:
 
 Each particle advances downstream only when its internal travel-time counter reaches zero. After each hop:
 - a hillslope travel time is assigned for non-channel cells,
-- a shorter channel travel time is assigned for channel cells.
+- a shorter channel travel time is assigned for channel cells,
+- travel times can be fixed (user-supplied scalars) or automatically derived from cell area and representative hillslope/channel velocities, bounded by configurable minimum/maximum values.
 
 This mechanism allows sub-timestep control of motion and captures faster transport along drainage networks without explicit hydraulic equations.
 

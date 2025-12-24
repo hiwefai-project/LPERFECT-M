@@ -26,6 +26,7 @@ from typing import Any, Dict, Tuple, Optional
 
 import numpy as np
 import xarray as xr
+from tqdm import tqdm
 from pyproj import Transformer
 from shapely.geometry import shape, Polygon, MultiPolygon, Point, LineString, MultiLineString
 from shapely.ops import transform as shp_transform
@@ -360,7 +361,8 @@ def main() -> int:
     feats = gj.get("features") or []
     updated, skipped = 0, 0
 
-    for feat in feats:
+    LOG.info("Processing %d GeoJSON features", len(feats))
+    for feat in tqdm(feats, desc="Enriching features", unit="feature"):
         g = feat.get("geometry")
         if not g:
             skipped += 1

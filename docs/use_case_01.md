@@ -1,0 +1,195 @@
+# Use Case: Italy, December 23rd 2025 intense rain event
+
+This guide documents how to reproduce a 6-hour LPERFECT run (12:00–18:00 UTC on 23 December 2025) using Italian Civil Protection radar mosaics. It covers data download, rainfall preprocessing with `utils/wr_to_rainrate.py`, model configuration, execution, and a minimal visualization of the flood depth output using the domain DEM as a basemap.
+
+## 1. Prepare local folders
+```bash
+mkdir -p data/radar/20251223
+```
+
+## 2. Download the domain template
+Fetch the domain grid that matches the radar mosaic projection and resolution:
+```bash
+wget -O data/domain.nc \
+  "https://data.meteo.uniparthenope.it/instruments/rdr0/tutorial/lperfectm/domain.nc"
+```
+
+## 3. Retrieve the radar GeoTIFFs (10-minute steps)
+Radar images are published every 600 seconds at
+```
+https://data.meteo.uniparthenope.it/instruments/rdr0/YYYY/MM/DD/rdr0_d01_YYYYMMDDZhhmm_VMI.tiff
+```
+For the 12:00–18:00 UTC window on 2025-12-23 the timestamps span 12:00 through 17:50 (36 files). Download them in chronological order:
+```bash
+base_url="https://data.meteo.uniparthenope.it/instruments/rdr0/2025/12/23"
+for hhmm in $(seq -w 1200 10 1750); do
+  url="${base_url}/rdr0_d01_20251223Z${hhmm}_VMI.tiff"
+  wget -q --show-progress -O "data/radar/20251223/${hhmm}.tiff" "$url"
+done
+```
+
+## 4. Convert radar reflectivity to rain rate NetCDF
+Use the provided utility to stack the 10-minute GeoTIFFs into a CF-compliant rainfall forcing aligned to `data/domain.nc`.
+```bash
+python utils/wr_to_rainrate.py \
+  --input $(printf "data/radar/20251223/%04d.tiff," $(seq -w 1200 10 1750) | sed 's/,$//') \
+  --output data/20251223Z1200_radar.nc \
+  --time 2025-12-23T12:00:00Z \
+  --dt 600 \
+  --domain data/domain.nc \
+  --source-name "DPC radar mosaic" \
+  --institution "Italian Department of Civil Protection" \
+  --source "https://data.meteo.uniparthenope.it/instruments/rdr0"
+```
+- `--time` is the timestamp of the first image (12:00 UTC).
+- `--dt 600` reflects the 10-minute cadence.
+- The script reads reflectivity (dBZ), converts it to rain rate (mm/h) with the default Z–R relationship (`Z = 200 * R^1.6`), reprojects/interpolates to the domain grid, and writes `rain_rate(time, latitude, longitude)` with CF metadata.
+
+## 5. Create the simulation configuration
+Save the following as `config_use_case_01.json` (or update your config accordingly):
+```json
+{
+  "domain": {
+    "mode": "netcdf",
+    "domain_nc": "data/domain.nc",
+    "varmap": {
+      "dem": "dem",
+      "d8": "d8",
+      "cn": "cn",
+      "channel_mask": "channel_mask",
+      "x": "longitude",
+      "y": "latitude"
+    }
+  },
+  "model": {
+    "start_time": "2025-12-23T12:00:00Z",
+    "T_s": 21600,
+    "dt_s": 5,
+    "encoding": "esri",
+    "ia_ratio": 0.2,
+    "particle_vol_m3": 0.25,
+    "travel_time_s": 5,
+    "travel_time_channel_s": 1,
+    "travel_time_mode": "auto",
+    "travel_time_auto": {
+      "hillslope_velocity_ms": 0.5,
+      "channel_velocity_ms": 1.5,
+      "min_s": 0.25,
+      "max_s": 3600.0
+    },
+    "outflow_sink": true,
+    "log_every": 10
+  },
+  "rain": {
+    "schema": {
+      "time_var": "time",
+      "lat_var": "latitude",
+      "lon_var": "longitude",
+      "rain_var": "rain_rate",
+      "crs_var": "crs",
+      "time_units": "hours since 1900-01-01 00:00:0.0",
+      "rate_units": "mm h-1",
+      "require_cf": true,
+      "require_time_dim": true
+    },
+    "sources": {
+      "rain": {
+        "kind": "netcdf",
+        "path": "data/20251223Z1200_radar.nc",
+        "var": "rain_rate",
+        "time_var": "time",
+        "select": "previous",
+        "mode": "intensity_mmph",
+        "weight": 1.0
+      }
+    }
+  },
+  "risk": {
+    "enabled": true,
+    "balance": 0.55,
+    "p_low": 5.0,
+    "p_high": 95.0
+  },
+  "restart": {
+    "in": null,
+    "out": "data/20251223Z1200_restart_state.nc",
+    "every": 120,
+    "strict_grid_check": true
+  },
+  "output": {
+    "out_netcdf": "data/20251223Z1200_flood_depth.nc",
+    "Conventions": "CF-1.10",
+    "title": "LPERFECT flood depth + hydrogeological risk index",
+    "institution": "UniParthenope"
+  },
+  "compute": {
+    "device": "cpu"
+  }
+}
+```
+
+## 6. Run the model
+Execute the 6-hour simulation on CPU:
+```bash
+python main.py --config config_use_case_01.json
+```
+Outputs:
+- `data/20251223Z1200_flood_depth.nc` with `flood_depth(time, latitude, longitude)` and (if enabled) `risk_index`.
+- `data/20251223Z1200_restart_state.nc` containing the restart state saved every 120 steps.
+
+## 7. Visualize flood depth with the DEM as basemap
+The snippet below overlays the first flood-depth snapshot on the DEM. It uses hillshading for quick context; adjust the timestamp or color scales as needed.
+```python
+import matplotlib.pyplot as plt
+import xarray as xr
+from matplotlib.colors import LightSource
+
+# Paths from the configuration
+flood_path = "data/20251223Z1200_flood_depth.nc"
+domain_path = "data/domain.nc"
+
+flood = xr.open_dataset(flood_path)
+domain = xr.open_dataset(domain_path)
+
+# Select the first time slice (change index as needed)
+flood_da = flood["flood_depth"].isel(time=0)
+dem = domain["dem"]
+
+ls = LightSource(azdeg=315, altdeg=45)
+shade = ls.shade(dem, cmap="Greys", blend_mode="overlay", vert_exag=1)
+
+fig, ax = plt.subplots(figsize=(10, 8))
+extent = [
+    float(dem.longitude.min()),
+    float(dem.longitude.max()),
+    float(dem.latitude.min()),
+    float(dem.latitude.max()),
+]
+ax.imshow(
+    shade,
+    extent=extent,
+    origin="lower",
+)
+cs = ax.pcolormesh(
+    flood_da.longitude,
+    flood_da.latitude,
+    flood_da,
+    cmap="Blues",
+    shading="auto",
+    alpha=0.7,
+    vmin=0,
+)
+cbar = fig.colorbar(cs, ax=ax, label="Flood depth (m)")
+ax.set_title("LPERFECT flood depth – 2025-12-23 12:00 UTC")
+ax.set_xlabel("Longitude")
+ax.set_ylabel("Latitude")
+plt.tight_layout()
+plt.show()
+```
+
+## 8. Recap
+1. Download `data/domain.nc`.
+2. Pull 12:00–17:50 UTC radar GeoTIFFs for 2025-12-23.
+3. Convert them to `data/20251223Z1200_radar.nc` with `utils/wr_to_rainrate.py`.
+4. Run `python main.py --config config_use_case_01.json` for the 6-hour window.
+5. Plot `flood_depth` over the DEM to inspect impacted areas.

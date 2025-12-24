@@ -9,6 +9,9 @@ from dataclasses import dataclass  # import dataclasses import dataclass
 # Import typing primitives.
 from typing import Any, Dict, List, Optional, Tuple  # import typing import Any, Dict, List, Optional, Tuple
 
+# Import logging.
+import logging  # import logging
+
 # Import numpy.
 import numpy as np  # import numpy as np
 
@@ -28,6 +31,8 @@ from .cf_schema import (  # import .cf_schema
     hours_since_1900_to_datetime64,
     normalize_cf_time_units,
 )
+
+logger = logging.getLogger("lperfect.rain")  # set logger
 
 
 @dataclass  # apply decorator
@@ -54,6 +59,8 @@ class RainSource:  # define class RainSource
 # Simple cache to avoid reopening NetCDF files each step.
 _NC_CACHE: Dict[str, xr.Dataset] = {}  # execute statement
 _NC_SCHEMA_CACHE: Dict[str, bool] = {}  # execute statement
+# Track the last rain time index logged per source to avoid duplicate messages.
+_RAIN_TIME_LOG: Dict[Tuple[str, str], int] = {}  # execute statement
 
 
 def xr_open_cached(path: str) -> xr.Dataset:  # define function xr_open_cached
@@ -177,6 +184,35 @@ def _validate_rain_dataset(ds: xr.Dataset, src: RainSource) -> None:  # define f
         raise ValueError(f"Rain units '{units}' do not match expected '{src.rate_units}'")  # raise ValueError(f"Rain units '{units}' do not match expected '{src.rate_units}'")
 
 
+def _format_time_value(val: Any) -> str:  # define function _format_time_value
+    """Format a time coordinate value for logging."""  # execute statement
+    if isinstance(val, np.datetime64):  # check condition isinstance(val, np.datetime64):
+        return np.datetime_as_string(val, unit="s")  # return np.datetime_as_string(val, unit="s")
+    return str(val)  # return str(val)
+
+
+def _log_rain_time_usage(src: RainSource, time_vals: Optional[np.ndarray], idx: int) -> None:  # define function _log_rain_time_usage
+    """Log when a rain source advances to a new time index."""  # execute statement
+    key = (src.name, src.path or src.var or src.kind)  # set key
+    last_idx = _RAIN_TIME_LOG.get(key, None)  # set last_idx
+    if last_idx == idx:  # check condition last_idx == idx:
+        return  # return None
+
+    time_label = None  # set time_label
+    if time_vals is not None:  # check condition time_vals is not None:
+        arr = np.asarray(time_vals)  # set arr
+        if arr.size > idx >= 0:  # check condition arr.size > idx >= 0:
+            time_label = _format_time_value(arr[idx])  # set time_label
+
+    logger.info(  # execute statement
+        "Rain source '%s': using rain rate at %s (index=%d)",  # set format string
+        src.name,  # execute statement
+        time_label if time_label is not None else f"index {idx}",  # execute statement
+        idx,  # execute statement
+    )  # execute statement
+    _RAIN_TIME_LOG[key] = idx  # execute statement
+
+
 def blended_rain_step_mm_rank0(  # define function blended_rain_step_mm_rank0
     sources: List[RainSource],  # execute statement
     shape: Tuple[int, int],  # execute statement
@@ -210,11 +246,17 @@ def blended_rain_step_mm_rank0(  # define function blended_rain_step_mm_rank0
                 field = np.asarray(da.values)  # set field
             elif da.ndim == 3:  # check alternate condition da.ndim == 3:
                 tdim = src.time_var if src.time_var in da.dims else da.dims[0]  # set tdim
+                time_vals: Optional[np.ndarray] = None  # set time_vals
                 if src.select == "step" or sim_time is None:  # check condition src.select == "step" or sim_time is None:
                     it = min(step_idx, da.sizes[tdim] - 1)  # set it
+                    try:  # start exception handling
+                        time_vals = _decode_cf_time_axis(ds, src)  # set time_vals
+                    except Exception:  # handle exception Exception:
+                        time_vals = None  # set time_vals
                 else:  # fallback branch
                     time_vals = _decode_cf_time_axis(ds, src)  # set time_vals
                     it = pick_time_index(time_vals, sim_time)  # set it
+                _log_rain_time_usage(src, time_vals, it)  # execute statement
                 field = np.asarray(da.isel({tdim: it}).values)  # set field
             else:  # fallback branch
                 raise ValueError("Rain var must be 2D or 3D (time,y,x)")  # raise ValueError("Rain var must be 2D or 3D (time,y,x)")

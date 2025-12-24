@@ -18,6 +18,7 @@ Project website: https://www.hiwefai-project.org
 - Detailed guide to preparing **domain** and **rainfall forcing** NetCDF inputs (with GDAL/CDO/NCO examples and Italy-oriented datasets) [link](docs/data.md)
 - A utility for making the model domain quick and easy [`link`](docs/make_domains.md)
 - A utility for converting a VMI radar image to rain rate stored in a NetCDF file [`link`](docs/wr_to_rain.md)
+- Step-by-step real-world walkthrough: **Italy, December 23rd 2025 intense rain event** [`link`](docs/use_case_01.md)
 
 ## Installation
 
@@ -163,4 +164,6 @@ plt.show()
 ```
 
 ## Use case
-ToDo
+### Italy, December 23rd 2025 intense rain event
+
+A complete, reproducible workflow (data download, radar-to-rain conversion, configuration, run, and visualization) is documented in [docs/use_case_01.md](docs/use_case_01.md).

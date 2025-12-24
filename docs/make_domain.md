@@ -1,4 +1,4 @@
-# Create a Domain NetCDF
+# Create a Domain NetCDF with `utils/make_domain.py`
 
 `utils/make_domain.py` builds a **domain NetCDF** (DEM + D8 + CN + optional channel mask)
 from existing rasters/NetCDF inputs. It can crop to a bounding box, resample to a

@@ -137,7 +137,7 @@ Requirements:
 - Include `latitude(latitude)` and `longitude(longitude)` coordinates
 - Consistent metadata and no misaligned grids
 
-For a ready-made CLI workflow, see [`docs/make_domains.md`](make_domains.md).
+For a ready-made CLI workflow, see [`docs/make_domains.md`](make_domain.md).
 
 ---
 

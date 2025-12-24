@@ -190,7 +190,9 @@ Normalization is performed using robust percentile thresholds to reduce sensitiv
 
 ### Outputs
 - flood depth field, expressed in meters,
-- hydrogeological risk index, dimensionless.
+- hydrogeological risk index, dimensionless,
+- optional GeoJSON with outflow hit points when enabled, listing the sea/lake impact cells and particle counts per save interval,
+- a logged simulation quality report summarizing mass-balance and hydrological checks.
 
 All outputs follow **CF-1.10 conventions**, ensuring compatibility with standard geoscientific tools.
 

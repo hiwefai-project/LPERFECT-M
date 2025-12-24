@@ -19,6 +19,37 @@ def parse_args() -> argparse.Namespace:  # define function parse_args
     ap.add_argument("--restart-in", default=None, help="Restart NetCDF to resume from.")  # execute statement
     ap.add_argument("--restart-out", default=None, help="Restart NetCDF path to write.")  # execute statement
     ap.add_argument("--out-nc", default=None, help="Output NetCDF path (rank 0 only).")  # execute statement
+    ap.add_argument("--outflow-geojson", default=None, help="GeoJSON path for outflow impact points.")  # execute statement
     ap.add_argument("--device", default=None, choices=["cpu", "gpu"], help="Compute device override.")  # execute statement
+    ap.add_argument(
+        "--travel-time-mode",
+        default=None,
+        choices=["fixed", "auto"],
+        help="Travel time calculation mode override.",
+    )  # execute statement
+    ap.add_argument(
+        "--travel-time-hill-vel",
+        default=None,
+        type=float,
+        help="Hillslope velocity (m/s) when using --travel-time-mode auto.",
+    )  # execute statement
+    ap.add_argument(
+        "--travel-time-channel-vel",
+        default=None,
+        type=float,
+        help="Channel velocity (m/s) when using --travel-time-mode auto.",
+    )  # execute statement
+    ap.add_argument(
+        "--travel-time-min",
+        default=None,
+        type=float,
+        help="Minimum hop travel time (s) when using --travel-time-mode auto.",
+    )  # execute statement
+    ap.add_argument(
+        "--travel-time-max",
+        default=None,
+        type=float,
+        help="Maximum hop travel time (s) when using --travel-time-mode auto.",
+    )  # execute statement
     # Return parsed args.
     return ap.parse_args()  # return ap.parse_args()

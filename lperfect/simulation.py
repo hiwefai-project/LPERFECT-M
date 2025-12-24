@@ -5,6 +5,7 @@
 
 # Import typing primitives.
 from typing import Any, Dict  # import typing import Any, Dict
+from collections import Counter, defaultdict  # import collections import Counter, defaultdict
 
 # Import logging.
 import logging  # import logging
@@ -16,6 +17,7 @@ import numpy as np  # import numpy as np
 from datetime import timedelta  # import datetime import timedelta
 from pathlib import Path  # import pathlib import Path
 import os  # import os
+import json  # import json
 
 # Import local modules.
 from .time_utils import datetime_to_hours_since_1900, parse_iso8601_to_datetime64, parse_iso8601_to_utc_datetime  # import .time_utils import datetime_to_hours_since_1900, parse_iso8601_to_datetime64, parse_iso8601_to_utc_datetime
@@ -154,6 +156,8 @@ def run_simulation(comm: Any, rank: int, size: int, cfg: Dict[str, Any], dom: Do
     out_nc = output_cfg.get("out_netcdf", None)  # set out_nc
     save_every_s = float(output_cfg.get("save_every_s", 0.0) or 0.0)  # set save_every_s
     rotate_every_s = float(output_cfg.get("rotate_every_s", 0.0) or 0.0)  # set rotate_every_s
+    outflow_geojson = output_cfg.get("outflow_geojson", None)  # set outflow_geojson
+    record_outflow_points = bool(outflow_geojson)  # set record_outflow_points
     if save_every_s < 0.0 or rotate_every_s < 0.0:  # check condition save_every_s < 0.0 or rotate_every_s < 0.0:
         raise ValueError("output.save_every_s and output.rotate_every_s must be non-negative.")  # raise ValueError("output.save_every_s and output.rotate_every_s must be non-negative.")
     if save_every_s > 0.0 and rotate_every_s > 0.0:  # check condition save_every_s > 0.0 and rotate_every_s > 0.0:
@@ -338,6 +342,173 @@ def run_simulation(comm: Any, rank: int, size: int, cfg: Dict[str, Any], dom: Do
         return True
 
     # ------------------------------
+    # Quality and outflow tracking
+    # ------------------------------
+    system_vol = float(particles.vol.sum())
+    if size > 1:
+        system_vol = float(comm.allreduce(system_vol, op=MPI.SUM))
+    mass_error_series: list[float] = []
+    total_hops = 0
+    total_spawned_particles = 0
+    total_outflow_particles = 0
+    outflow_interval_counts: dict[int, Counter[tuple[int, int]]] = defaultdict(Counter)
+
+    def _interval_index(elapsed_s: float) -> int:
+        """Return zero-based interval index for a given elapsed time."""
+        if output_interval_s <= 0.0:
+            return 0
+        return int(np.floor(elapsed_s / output_interval_s))
+
+    def _build_quality_report(
+        final_elapsed_s: float,
+        system_vol_final: float,
+        mass_error_series: list[float],
+        cum_rain: float,
+        cum_runoff: float,
+        cum_outflow: float,
+        total_hops: int,
+        total_spawned_particles: int,
+        total_outflow_particles: int,
+        active_particles: int,
+        steps_run: int,
+    ) -> Dict[str, Any]:
+        """Assemble numerical + hydrological diagnostics."""
+        expected = cum_runoff - cum_outflow
+        final_mass_error = system_vol_final - expected
+        series = np.asarray(mass_error_series if mass_error_series else [final_mass_error], dtype=np.float64)
+        mass_abs_max = float(np.max(np.abs(series)))
+        mass_abs_mean = float(np.mean(series))
+
+        tol_base = max(cum_runoff, cum_rain, 1.0)
+        numerical_ok = abs(final_mass_error) <= (1e-3 * tol_base + 1e-6)
+
+        runoff_to_rain = float(cum_runoff / cum_rain) if cum_rain > 0.0 else np.nan
+        hydro_ok = (cum_rain <= 0.0 and cum_runoff <= 1e-6) or (cum_runoff <= cum_rain + 1e-3 * tol_base)
+
+        return {
+            "runtime": {"elapsed_s": float(final_elapsed_s), "steps": int(steps_run)},
+            "volume_balance": {
+                "rain_m3": float(cum_rain),
+                "runoff_m3": float(cum_runoff),
+                "outflow_m3": float(cum_outflow),
+                "stored_m3": float(system_vol_final),
+                "expected_storage_m3": float(expected),
+                "final_mass_error_m3": float(final_mass_error),
+                "mass_error_abs_max_m3": mass_abs_max,
+                "mass_error_abs_mean_m3": mass_abs_mean,
+                "mass_error_pct_of_runoff": float(final_mass_error / cum_runoff * 100.0) if cum_runoff > 0.0 else np.nan,
+            },
+            "hydrology": {
+                "runoff_to_rain_ratio": runoff_to_rain,
+                "hydrology_ok": bool(hydro_ok),
+                "notes": "runoff should not exceed rainfall volume",
+            },
+            "particles": {
+                "spawned_total": int(total_spawned_particles),
+                "outflow_total": int(total_outflow_particles),
+                "active_particles": int(active_particles),
+                "total_hops": int(total_hops),
+            },
+            "status": {"numerical_ok": bool(numerical_ok), "hydrological_ok": bool(hydro_ok)},
+        }
+
+    def _log_quality_report(report: Dict[str, Any]) -> None:
+        """Emit a human-readable quality summary."""
+        logger.info("Simulation quality report:")
+        bal = report["volume_balance"]
+        hyd = report["hydrology"]
+        part = report["particles"]
+        logger.info(
+            "  Volume balance (m3): rain=%.3e runoff=%.3e outflow=%.3e stored=%.3e expected=%.3e",
+            bal["rain_m3"],
+            bal["runoff_m3"],
+            bal["outflow_m3"],
+            bal["stored_m3"],
+            bal["expected_storage_m3"],
+        )
+        logger.info(
+            "  Mass error: final=%.3e (%.3f%% of runoff) max|err|=%.3e mean|err|=%.3e",
+            bal["final_mass_error_m3"],
+            bal["mass_error_pct_of_runoff"],
+            bal["mass_error_abs_max_m3"],
+            bal["mass_error_abs_mean_m3"],
+        )
+        logger.info(
+            "  Hydrology: runoff/rain=%.3f ok=%s (%s)",
+            hyd["runoff_to_rain_ratio"],
+            hyd["hydrology_ok"],
+            hyd["notes"],
+        )
+        logger.info(
+            "  Particles: spawned=%d outflow=%d active=%d total_hops=%d",
+            part["spawned_total"],
+            part["outflow_total"],
+            part["active_particles"],
+            part["total_hops"],
+        )
+
+    def _write_outflow_geojson(
+        interval_counts: dict[int, Counter[tuple[int, int]]],
+        final_elapsed_s: float,
+    ) -> None:
+        """Write GeoJSON with per-interval outflow particle counts."""
+        if not outflow_geojson or rank != 0:
+            return
+
+        if output_interval_s > 0.0:
+            start_interval = _interval_index(elapsed_s0)
+            end_interval = _interval_index(final_elapsed_s)
+            interval_base = min(start_interval, min(interval_counts.keys(), default=start_interval))
+            n_intervals = max(1, end_interval - interval_base + 1)
+        else:
+            interval_base = 0
+            n_intervals = 1
+
+        per_cell: dict[tuple[int, int], list[int]] = {}
+        for idx, counter in interval_counts.items():
+            for (r, c), cnt in counter.items():
+                arr = per_cell.setdefault((r, c), [0] * n_intervals)
+                if idx - interval_base >= n_intervals:
+                    arr.extend([0] * (idx - interval_base - n_intervals + 1))
+                arr[idx - interval_base] += int(cnt)
+
+        features = []
+        for (r, c), counts in per_cell.items():
+            if len(counts) < n_intervals:
+                counts = counts + [0] * (n_intervals - len(counts))
+            x = float(dom.x_vals[c])
+            y = float(dom.y_vals[r])
+            features.append(
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [x, y]},
+                    "properties": {
+                        "row": int(r),
+                        "col": int(c),
+                        "particles_per_interval": counts,
+                        "total_particles": int(sum(counts)),
+                        "interval_index_offset": int(interval_base),
+                        "save_interval_s": float(output_interval_s),
+                    },
+                }
+            )
+
+        Path(outflow_geojson).parent.mkdir(parents=True, exist_ok=True)
+        collection = {
+            "type": "FeatureCollection",
+            "features": features,
+            "properties": {
+                "description": "LPERFECT outflow impact points",
+                "interval_index_offset": int(interval_base),
+                "save_interval_s": float(output_interval_s),
+                "elapsed_start_s": float(elapsed_s0),
+                "elapsed_end_s": float(final_elapsed_s),
+            },
+        }
+        with open(outflow_geojson, "w", encoding="utf-8") as f:
+            json.dump(collection, f)
+        logger.info("Outflow GeoJSON written: %s (features=%d)", outflow_geojson, len(features))
+    # ------------------------------
     # Main time loop
     # ------------------------------
     if elapsed_s0 > T_s + 1e-9:  # check condition elapsed_s0 > T_s + 1e-9:
@@ -403,9 +574,12 @@ def run_simulation(comm: Any, rank: int, size: int, cfg: Dict[str, Any], dom: Do
             active_mask_global=dom.active_mask,  # set active_mask_global
         )  # execute statement
         particles = concat_particles(particles, newp)  # set particles
+        new_particles_local = int(newp.r.size)
+        new_particles = comm.allreduce(new_particles_local, op=MPI.SUM) if size > 1 else new_particles_local
+        total_spawned_particles += new_particles
 
         # Advect particles.
-        particles, outflow_vol_local, nhops_local = advect_particles_one_step(  # set particles, outflow_vol_local, nhops_local
+        particles, outflow_vol_local, nhops_local, outflow_points_local = advect_particles_one_step(  # set particles, outflow_vol_local, nhops_local, outflow_points_local
             particles=particles,  # set particles
             valid=valid,  # set valid
             ds_r=ds_r,  # set ds_r
@@ -416,6 +590,7 @@ def run_simulation(comm: Any, rank: int, size: int, cfg: Dict[str, Any], dom: Do
             channel_mask=dom.channel_mask,  # set channel_mask
             outflow_sink=outflow_sink,  # set outflow_sink
             shared_cfg=shared_cfg,  # set shared_cfg
+            track_outflow_points=record_outflow_points,  # set track_outflow_points
         )  # execute statement
 
         # Migrate particles between slabs (MPI).
@@ -424,6 +599,7 @@ def run_simulation(comm: Any, rank: int, size: int, cfg: Dict[str, Any], dom: Do
 
         # Compute current system volume (sum of particle volumes).
         system_vol_local = float(particles.vol.sum())  # set system_vol_local
+        outflow_particle_count_step = int(sum(outflow_points_local.values())) if record_outflow_points else 0
 
         # Reduce diagnostics to global totals.
         if size > 1:  # check condition size > 1:
@@ -432,21 +608,30 @@ def run_simulation(comm: Any, rank: int, size: int, cfg: Dict[str, Any], dom: Do
             outflow_vol_step = comm.allreduce(outflow_vol_local, op=MPI.SUM)  # set outflow_vol_step
             system_vol = comm.allreduce(system_vol_local, op=MPI.SUM)  # set system_vol
             nhops = comm.allreduce(nhops_local, op=MPI.SUM)  # set nhops
+            outflow_particle_count_global = comm.allreduce(outflow_particle_count_step, op=MPI.SUM)
         else:  # fallback branch
             rain_vol_step = rain_vol_step_local  # set rain_vol_step
             runoff_vol_step = spawned_vol_local  # set runoff_vol_step
             outflow_vol_step = outflow_vol_local  # set outflow_vol_step
             system_vol = system_vol_local  # set system_vol
             nhops = nhops_local  # set nhops
+            outflow_particle_count_global = outflow_particle_count_step
 
         # Update cumulative totals.
         cum_rain += rain_vol_step  # execute statement
         cum_runoff += runoff_vol_step  # execute statement
         cum_outflow += outflow_vol_step  # execute statement
+        total_outflow_particles += int(outflow_particle_count_global)
+        total_hops += int(nhops)
 
         # Mass balance error: stored volume minus (generated - outflow).
         expected = cum_runoff - cum_outflow  # set expected
         mass_error = system_vol - expected  # set mass_error
+        mass_error_series.append(float(mass_error))
+
+        if record_outflow_points and outflow_points_local:
+            interval_idx = _interval_index(step_time_s)
+            outflow_interval_counts[interval_idx].update(outflow_points_local)
 
         # Periodic diagnostics (rank0 only).
         if rank == 0 and log_every > 0 and ((k + 1) % log_every == 0 or (k + 1) == steps):  # check condition rank == 0 and log_every > 0 and ((k + 1) % log_every == 0 or (k + 1) == steps):
@@ -515,11 +700,53 @@ def run_simulation(comm: Any, rank: int, size: int, cfg: Dict[str, Any], dom: Do
     if not out_nc:  # check condition not out_nc:
         if rank == 0:  # check condition rank == 0:
             logger.info("No output.out_netcdf configured; skipping final output.")  # execute statement
-        return  # return value
+    else:
+        if steps == 0 and not output_written_any:  # check condition steps == 0 and not output_written_any:
+            _write_output(final_elapsed_s)  # execute statement
+        if not output_written_on_final_step:  # check condition not output_written_on_final_step:
+            _write_output(final_elapsed_s)  # execute statement
 
-    if steps == 0 and not output_written_any:  # check condition steps == 0 and not output_written_any:
-        _write_output(final_elapsed_s)  # execute statement
-        return  # return value
+    # ------------------------------
+    # Final diagnostics and optional GeoJSON export
+    # ------------------------------
+    final_system_vol_local = float(particles.vol.sum())
+    active_particles_local = int(particles.r.size)
+    if size > 1:
+        final_system_vol = float(comm.allreduce(final_system_vol_local, op=MPI.SUM))
+        active_particles = int(comm.allreduce(active_particles_local, op=MPI.SUM))
+    else:
+        final_system_vol = final_system_vol_local
+        active_particles = active_particles_local
 
-    if not output_written_on_final_step:  # check condition not output_written_on_final_step:
-        _write_output(final_elapsed_s)  # execute statement
+    if not mass_error_series:
+        expected = cum_runoff - cum_outflow
+        mass_error_series.append(float(final_system_vol - expected))
+
+    merged_interval_counts: dict[int, Counter[tuple[int, int]]] = defaultdict(Counter)
+    if record_outflow_points:
+        if size > 1:
+            gathered = comm.gather(outflow_interval_counts, root=0)
+            if rank == 0:
+                for counts in gathered:
+                    for idx, counter in counts.items():
+                        merged_interval_counts[idx].update(counter)
+        else:
+            merged_interval_counts = outflow_interval_counts
+
+    if rank == 0:
+        report = _build_quality_report(
+            final_elapsed_s=final_elapsed_s,
+            system_vol_final=final_system_vol,
+            mass_error_series=mass_error_series,
+            cum_rain=cum_rain,
+            cum_runoff=cum_runoff,
+            cum_outflow=cum_outflow,
+            total_hops=total_hops,
+            total_spawned_particles=total_spawned_particles,
+            total_outflow_particles=total_outflow_particles,
+            active_particles=active_particles,
+            steps_run=steps,
+        )
+        _log_quality_report(report)
+        if record_outflow_points:
+            _write_outflow_geojson(merged_interval_counts, final_elapsed_s)

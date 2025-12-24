@@ -83,9 +83,22 @@ def main() -> None:
     if args.out_nc is not None:
         # Override the NetCDF output path.
         cfg["output"]["out_netcdf"] = args.out_nc
+    if args.outflow_geojson is not None:
+        # Override outflow GeoJSON export path.
+        cfg["output"]["outflow_geojson"] = args.outflow_geojson
     if args.device is not None:
         # Override the compute device (e.g., "cpu" or "cuda").
         cfg.setdefault("compute", {})["device"] = args.device
+    if args.travel_time_mode is not None:
+        cfg["model"]["travel_time_mode"] = args.travel_time_mode
+    if args.travel_time_hill_vel is not None:
+        cfg["model"].setdefault("travel_time_auto", {})["hillslope_velocity_ms"] = args.travel_time_hill_vel
+    if args.travel_time_channel_vel is not None:
+        cfg["model"].setdefault("travel_time_auto", {})["channel_velocity_ms"] = args.travel_time_channel_vel
+    if args.travel_time_min is not None:
+        cfg["model"].setdefault("travel_time_auto", {})["min_s"] = args.travel_time_min
+    if args.travel_time_max is not None:
+        cfg["model"].setdefault("travel_time_auto", {})["max_s"] = args.travel_time_max
 
     # Enforce NetCDF-only domain input.
     if cfg.get("domain", {}).get("mode", "netcdf") != "netcdf":

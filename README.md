@@ -68,12 +68,16 @@ Useful overrides:
 python main.py --config config.json --out-nc flood.nc
 python main.py --config config.json --restart-in restart_state.nc
 python main.py --config config.json --restart-out restart_state.nc
+python main.py --config config.json --travel-time-mode auto
+python main.py --config config.json --outflow-geojson out/outflow_hits.geojson
 ```
 
 Output cadence:
 - `output.save_every_s`: append a new time slice to the configured NetCDF every N simulated seconds (e.g., `3600` for hourly snapshots).
 - `output.rotate_every_s`: write a new NetCDF every N simulated seconds, using the `output.out_netcdf` basename with `_0000.nc`, `_0001.nc`, ... suffixes.
 - The final state is always written, even if it does not align exactly with the interval.
+- If `output.outflow_geojson` (or `--outflow-geojson`) is set, the model writes a GeoJSON with the grid cells where particles exit to the sea/lakes, including the number of particles per save interval.
+- At the end of each run, LPERFECT logs a simulation quality report summarizing mass balance, hydrological consistency, and particle statistics.
 
 ## Input NetCDFs
 

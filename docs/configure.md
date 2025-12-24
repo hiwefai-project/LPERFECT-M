@@ -27,6 +27,12 @@ Run `python main.py --help` to see the available flags. The CLI currently offers
 | `--restart-out` | `None` | Path to write restart NetCDF. Overrides `restart.out`. | `python main.py --restart-out restart_state.nc` |
 | `--out-nc` | `None` | Output NetCDF path. Overrides `output.out_netcdf`. | `python main.py --out-nc flood_depth.nc` |
 | `--device` | `None` | Compute device override (`cpu` or `gpu`). | `python main.py --device gpu` |
+| `--travel-time-mode` | `None` | Override `model.travel_time_mode` (`fixed` or `auto`). | `python main.py --travel-time-mode auto` |
+| `--travel-time-hill-vel` | `None` | Hillslope velocity (m/s) used when `--travel-time-mode auto`. | `python main.py --travel-time-mode auto --travel-time-hill-vel 0.8` |
+| `--travel-time-channel-vel` | `None` | Channel velocity (m/s) used when `--travel-time-mode auto`. | `python main.py --travel-time-mode auto --travel-time-channel-vel 2.0` |
+| `--travel-time-min` | `None` | Minimum hop time (s) when `--travel-time-mode auto`. | `python main.py --travel-time-mode auto --travel-time-min 0.5` |
+| `--travel-time-max` | `None` | Maximum hop time (s) when `--travel-time-mode auto`. | `python main.py --travel-time-mode auto --travel-time-max 900` |
+| `--outflow-geojson` | `None` | GeoJSON path for logging sea/lake outflow hit points. Overrides `output.outflow_geojson`. | `python main.py --outflow-geojson outputs/outflow.geojson` |
 
 > Tip: You can combine the CLI and JSON file. For example, keep a stable `config.json`
 > and vary only the output path with `--out-nc` for batch runs.
@@ -59,6 +65,13 @@ The JSON file mirrors the default configuration structure. A complete example
     "particle_vol_m3": 0.25,
     "travel_time_s": 5,
     "travel_time_channel_s": 1,
+    "travel_time_mode": "fixed",
+    "travel_time_auto": {
+      "hillslope_velocity_ms": 0.5,
+      "channel_velocity_ms": 1.5,
+      "min_s": 0.25,
+      "max_s": 3600.0
+    },
     "outflow_sink": true,
     "log_every": 10
   },
@@ -100,6 +113,9 @@ The JSON file mirrors the default configuration structure. A complete example
   },
   "output": {
     "out_netcdf": "flood_depth.nc",
+    "save_every_s": 0,
+    "rotate_every_s": 0,
+    "outflow_geojson": null,
     "Conventions": "CF-1.10",
     "title": "LPERFECT flood depth + hydrogeological risk index",
     "institution": "UniParthenope"
@@ -386,11 +402,13 @@ Controls final NetCDF output metadata and paths.
 | `output.out_netcdf` | `flood_depth.nc` | Final output NetCDF path. | `"out_netcdf": "outputs/flood_depth.nc"` |
 | `output.save_every_s` | `0` | Append a new time slice to the same NetCDF every N simulated seconds (`0` disables periodic writes). | `"save_every_s": 3600` |
 | `output.rotate_every_s` | `0` | Write a brand-new NetCDF every N simulated seconds, using the `out_netcdf` basename plus `_0000.nc`, `_0001.nc`, ... | `"rotate_every_s": 1800` |
+| `output.outflow_geojson` | `null` | When set, write a GeoJSON listing cells where particles exit to sea/lakes, with particle counts per save interval. | `"outflow_geojson": "outputs/outflow_hits.geojson"` |
 | `output.Conventions` | `CF-1.10` | CF metadata convention string. | `"Conventions": "CF-1.8"` |
 | `output.title` | `LPERFECT flood depth + hydrogeological risk index` | Global title attribute. | `"title": "LPERFECT flood run"` |
 | `output.institution` | `UniParthenope` | Global institution attribute. | `"institution": "My Lab"` |
 
 > Configure **either** `save_every_s` **or** `rotate_every_s` (not both). The final state is always written even if it does not land exactly on the requested cadence.
+> At the end of each run, a simulation quality report is logged automatically (no configuration needed), covering mass balance and hydrological checks.
 
 **Example:**
 
@@ -399,12 +417,15 @@ Controls final NetCDF output metadata and paths.
   "output": {
     "out_netcdf": "flood_depth.nc",
     "save_every_s": 3600,
+    "outflow_geojson": "outputs/outflow_hits.geojson",
     "Conventions": "CF-1.10",
     "title": "LPERFECT flood depth",
     "institution": "UniParthenope"
   }
 }
 ```
+
+When `outflow_geojson` is set (or `--outflow-geojson` is provided), the model emits a GeoJSON FeatureCollection where each point marks a cell whose advection path exits to the sea or a lake. The `particles_per_interval` property lists particle counts per save interval, and `total_particles` aggregates the full run.
 
 ---
 

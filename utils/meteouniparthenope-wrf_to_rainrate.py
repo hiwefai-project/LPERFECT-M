@@ -10,7 +10,8 @@ time-series NetCDF compliant with a simple time-dependent rain-rate CDL
 Input files (per the provided CDL) typically have:
 - dimensions: time, latitude, longitude
 - coordinates: time(time), latitude(latitude), longitude(longitude)
-- hourly accumulated rain in: RAIN_DELTA or DELTA_RAIN (mm)
+- hourly accumulated rain in: DELTA_RAIN (mm)
+- reference domain (cdl/domain.cdl) for regridding
 
 Output file contains:
 - rain_rate(time, latitude, longitude) in kg m-2 s-1
@@ -30,7 +31,8 @@ from __future__ import annotations
 import argparse
 import glob
 import logging
-from typing import Optional, Any, List, Tuple
+from pathlib import Path
+from typing import Optional, Any, List
 
 import numpy as np
 import xarray as xr
@@ -97,21 +99,88 @@ def _expand_inputs(inputs: List[str]) -> List[str]:
     return out
 
 
-def _assert_same_grid(
-    base_lat: np.ndarray,
-    base_lon: np.ndarray,
-    lat: np.ndarray,
-    lon: np.ndarray,
-    path: str,
-) -> None:
-    """Ensure that multiple inputs are on the same grid (required for safe merge)."""
-    if base_lat.shape != lat.shape or base_lon.shape != lon.shape:
-        raise ValueError(
-            f"Grid shape mismatch in {path}: lat {lat.shape} lon {lon.shape} "
-            f"vs base lat {base_lat.shape} lon {base_lon.shape}"
+def _require_rioxarray() -> None:
+    """Ensure rioxarray is available for reprojection/regridding."""
+    try:
+        import rioxarray as rxr  # noqa: F401
+    except Exception as exc:  # pragma: no cover - handled via runtime error
+        raise ImportError("rioxarray is required for regridding to the domain grid.") from exc
+
+
+def _load_domain_reference(domain_path: str) -> xr.Dataset:
+    """Load the reference domain NetCDF (compliant with cdl/domain.cdl)."""
+    resolved = Path(domain_path)
+    if not resolved.exists():
+        raise FileNotFoundError(f"Domain NetCDF not found: {resolved}")
+    ds = xr.open_dataset(resolved)
+    if "latitude" not in ds.coords or "longitude" not in ds.coords:
+        raise ValueError("Domain dataset must define latitude/longitude coordinates.")
+    return ds
+
+
+def _template_from_domain(domain: xr.Dataset) -> xr.DataArray:
+    if domain.data_vars:
+        template = next(iter(domain.data_vars.values()))
+        return template.drop_vars([name for name in template.coords if name not in ("latitude", "longitude")])
+    return xr.DataArray(
+        np.empty((domain.dims["latitude"], domain.dims["longitude"])),
+        coords={"latitude": domain["latitude"], "longitude": domain["longitude"]},
+        dims=("latitude", "longitude"),
+    )
+
+
+def _extract_domain_crs(domain: xr.Dataset) -> Optional[str]:
+    if "crs" not in domain:
+        return None
+    epsg_code = domain["crs"].attrs.get("epsg_code")
+    if epsg_code:
+        return str(epsg_code)
+    grid_mapping_name = domain["crs"].attrs.get("grid_mapping_name")
+    if grid_mapping_name:
+        return str(grid_mapping_name)
+    return None
+
+
+def _prepare_for_regrid(da: xr.DataArray) -> xr.DataArray:
+    """Set spatial dimension names for rioxarray operations."""
+    try:
+        return da.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude", inplace=False)
+    except Exception:
+        return da
+
+
+def _regrid_to_domain(da: xr.DataArray, domain: xr.Dataset) -> xr.DataArray:
+    """Regrid a 2D DataArray onto the reference domain grid."""
+    template = _prepare_for_regrid(_template_from_domain(domain))
+    da = _prepare_for_regrid(da)
+    domain_crs = _extract_domain_crs(domain)
+    if domain_crs:
+        template = template.rio.write_crs(domain_crs, inplace=False)
+        if da.rio.crs is None:
+            da = da.rio.write_crs(domain_crs, inplace=False)
+    try:
+        regridded = da.rio.reproject_match(template)
+    except Exception:
+        regridded = da.interp(
+            latitude=domain["latitude"],
+            longitude=domain["longitude"],
+            method="nearest",
         )
-    if not np.allclose(base_lat, lat, rtol=0, atol=1e-10) or not np.allclose(base_lon, lon, rtol=0, atol=1e-10):
-        raise ValueError(f"Grid coordinate mismatch in {path}: lat/lon values differ from base grid.")
+    return regridded.assign_coords(latitude=domain["latitude"], longitude=domain["longitude"])
+
+
+def _regrid_rain_rate_time_series(rain_rate: xr.DataArray, domain: xr.Dataset) -> xr.DataArray:
+    """Apply regridding per time step to keep temporal dimension intact."""
+    if "time" not in rain_rate.dims:
+        return _regrid_to_domain(rain_rate, domain)
+
+    regridded = []
+    for idx in range(rain_rate.sizes["time"]):
+        slice_rr = rain_rate.isel(time=idx)
+        regridded_slice = _regrid_to_domain(slice_rr, domain)
+        regridded_slice = regridded_slice.expand_dims(time=[rain_rate["time"].values[idx]])
+        regridded.append(regridded_slice)
+    return xr.concat(regridded, dim="time")
 
 
 def _convert_one_dataset(
@@ -154,11 +223,17 @@ def convert_many(
     accum_hours: float,
     sort_time: bool,
     dedupe_time: bool,
+    domain_path: str,
 ) -> None:
     """Convert multiple files and merge into a single time series output."""
+    _require_rioxarray()
+
     paths = _expand_inputs(in_paths)
     if not paths:
         raise ValueError("No input files found. Check --in arguments/globs.")
+
+    domain = _load_domain_reference(domain_path)
+    LOG.info("Loaded reference domain from %s", domain_path)
 
     LOG.info("Inputs (%d):", len(paths))
     for p in paths:
@@ -166,14 +241,11 @@ def convert_many(
 
     intermediate: List[xr.Dataset] = []
 
-    base_lat = None
-    base_lon = None
-
-    chosen_rain_var: Optional[str] = rain_var
+    chosen_rain_var: str = rain_var or "DELTA_RAIN"
     fill_out: Optional[float] = None
     time_units: Optional[str] = None
-    lat_attrs: dict = {}
-    lon_attrs: dict = {}
+    lat_attrs: dict = dict(domain["latitude"].attrs)
+    lon_attrs: dict = dict(domain["longitude"].attrs)
     time_attrs: dict = {}
 
     for idx, path in enumerate(paths):
@@ -186,13 +258,8 @@ def convert_many(
         if not lat_name or not lon_name or not time_name:
             raise ValueError(f"Could not infer coords in {path}. Found lat={lat_name} lon={lon_name} time={time_name}")
 
-        if chosen_rain_var is None:
-            for cand in ["RAIN_DELTA", "DELTA_RAIN", "HOURLY_RAIN", "RAIN"]:
-                if cand in ds.variables:
-                    chosen_rain_var = cand
-                    break
-            if chosen_rain_var is None:
-                raise KeyError(f"Could not auto-detect rain var in {path}. Vars: {list(ds.variables)}")
+        if chosen_rain_var != "DELTA_RAIN":
+            raise ValueError("This converter only supports the DELTA_RAIN variable.")
 
         if chosen_rain_var not in ds.variables:
             raise KeyError(f"Rain variable '{chosen_rain_var}' not found in {path}. Vars: {list(ds.variables)}")
@@ -203,19 +270,7 @@ def convert_many(
             time_units = str(ds[time_name].attrs.get("units", "hours since 1900-01-01 00:00:0.0"))
 
         if idx == 0:
-            base_lat = np.asarray(ds[lat_name].values, dtype=float)
-            base_lon = np.asarray(ds[lon_name].values, dtype=float)
-            lat_attrs = dict(ds[lat_name].attrs)
-            lon_attrs = dict(ds[lon_name].attrs)
             time_attrs = dict(ds[time_name].attrs)
-        else:
-            _assert_same_grid(
-                base_lat=base_lat,
-                base_lon=base_lon,
-                lat=np.asarray(ds[lat_name].values, dtype=float),
-                lon=np.asarray(ds[lon_name].values, dtype=float),
-                path=path,
-            )
 
         inter = _convert_one_dataset(
             ds=ds,
@@ -236,9 +291,12 @@ def convert_many(
         if rename_map:
             inter = inter.rename(rename_map)
 
-        intermediate.append(inter)
-
-    assert chosen_rain_var is not None
+        regridded_rr = _regrid_rain_rate_time_series(inter["rain_rate"], domain)
+        regridded = xr.Dataset(
+            data_vars={"rain_rate": regridded_rr},
+            coords={"time": inter["time"], "latitude": domain["latitude"], "longitude": domain["longitude"]},
+        )
+        intermediate.append(regridded)
 
     LOG.info("Concatenating %d datasets along time...", len(intermediate))
     merged = xr.concat(intermediate, dim="time")
@@ -261,6 +319,7 @@ def convert_many(
         "input_files": ", ".join(paths),
         "input_rain_variable": chosen_rain_var,
         "accumulation_period_hours": float(accum_hours),
+        "reference_domain": str(Path(domain_path).resolve()),
     }
 
     merged["time"].attrs = time_attrs
@@ -293,9 +352,11 @@ def main() -> int:
                     help="One or more input NetCDFs (paths or globs). Example: wrf5_d02_20251221Z*.nc")
     ap.add_argument("--out", dest="out_path", required=True, help="Output merged NetCDF.")
     ap.add_argument("--rain-var", default=None,
-                    help="Rain accumulation variable name (RAIN_DELTA or DELTA_RAIN). If omitted, auto-detect from first file.")
+                    help="Rain accumulation variable name (only DELTA_RAIN is supported).")
     ap.add_argument("--accum-hours", type=float, default=1.0,
                     help="Accumulation period in hours for the input variable (default: 1.0).")
+    ap.add_argument("--domain", required=True,
+                    help="Domain NetCDF (matching cdl/domain.cdl) used as the target grid for regridding.")
     ap.add_argument("--no-sort", action="store_true", help="Do not sort time after concatenation.")
     ap.add_argument("--no-dedupe", action="store_true", help="Do not remove duplicate time values.")
     ap.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
@@ -310,6 +371,7 @@ def main() -> int:
         accum_hours=float(args.accum_hours),
         sort_time=not args.no_sort,
         dedupe_time=not args.no_dedupe,
+        domain_path=args.domain,
     )
     return 0
 

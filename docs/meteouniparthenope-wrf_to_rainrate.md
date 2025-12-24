@@ -4,6 +4,8 @@ This script converts **one or many** WRF-derived NetCDF files (e.g. `wrf5_d02_*.
 
 It is intended for hydrological / impact models that require **rain rate** instead of accumulated precipitation.
 
+It now always **regrids the output onto a reference domain NetCDF** built from `cdl/domain.cdl`, so the merged time series matches your model grid.
+
 ---
 
 ## What it does
@@ -13,13 +15,12 @@ WRF post-processing products often provide:
 - **Accumulated precipitation** over a time window (commonly 1 hour)
 - Units: **mm**
 
-The rain accumulation is typically in:
-- `RAIN_DELTA` *(as you mentioned)* or
-- `DELTA_RAIN` *(as shown in the CDL)*
+The rain accumulation must be provided as **`DELTA_RAIN`**.
 
 ### Output (`rain_time_dependent`)
 The output contains:
 - `rain_rate(time, latitude, longitude)` in **kg m⁻² s⁻¹**
+- Latitude/longitude and metadata are taken from the supplied **domain NetCDF** (matching `cdl/domain.cdl`).
 
 ### New: merge multiple times into one time series
 You can pass multiple file paths or globs. The script will:
@@ -27,6 +28,7 @@ You can pass multiple file paths or globs. The script will:
 2. Concatenate along `time`
 3. Sort by time (default)
 4. Deduplicate identical times (default, keeps first)
+5. **Regrid every timestep onto the reference domain grid**
 
 ---
 
@@ -45,12 +47,8 @@ Set the accumulation window with:
 
 ## Input requirements for merging
 
-All input files must share the same grid:
-- same latitude values
-- same longitude values
-
-If any file differs, the script stops with:
-- “Grid shape mismatch” or “Grid coordinate mismatch”
+Each input file must expose latitude/longitude coordinates so it can be regridded.
+All timesteps are interpolated (or reprojected) onto the **domain grid you pass with `--domain`**, so the source grids can differ but must contain valid spatial metadata.
 
 ---
 
@@ -64,33 +62,30 @@ pip install numpy xarray netCDF4
 
 ## Usage
 
+> **Required**: pass the reference domain NetCDF (`--domain path/to/domain.nc`), built from `cdl/domain.cdl`.
+
 ### Single file
 ```bash
 python convert_wrf_rain_to_rain_time_dependent.py \
   --in wrf5_d02_20251221Z1200.nc \
-  --out rain_time_dependent_20251221Z1200.nc
+  --out rain_time_dependent_20251221Z1200.nc \
+  --domain domain.nc
 ```
 
 ### Multiple files using a glob
 ```bash
 python convert_wrf_rain_to_rain_time_dependent.py \
   --in wrf5_d02_20251221Z*.nc \
-  --out rain_time_series_20251221.nc
+  --out rain_time_series_20251221.nc \
+  --domain domain.nc
 ```
 
 ### Multiple explicit files
 ```bash
 python convert_wrf_rain_to_rain_time_dependent.py \
   --in wrf5_d02_20251221Z1200.nc wrf5_d02_20251221Z1300.nc wrf5_d02_20251221Z1400.nc \
-  --out rain_time_series_20251221.nc
-```
-
-### Explicit rain variable name
-```bash
-python convert_wrf_rain_to_rain_time_dependent.py \
-  --in wrf5_d02_20251221Z*.nc \
-  --out rain_time_series.nc \
-  --rain-var RAIN_DELTA
+  --out rain_time_series_20251221.nc \
+  --domain domain.nc
 ```
 
 ### Non-hourly accumulations
@@ -98,6 +93,7 @@ python convert_wrf_rain_to_rain_time_dependent.py \
 python convert_wrf_rain_to_rain_time_dependent.py \
   --in wrf5_d02_20251221Z*.nc \
   --out rain_time_series.nc \
+  --domain domain.nc \
   --accum-hours 3
 ```
 
@@ -109,8 +105,9 @@ python convert_wrf_rain_to_rain_time_dependent.py \
 |------|-------------|
 | `--in PATH [PATH ...]` | One or more input NetCDFs. Can be globs. |
 | `--out PATH` | Output merged NetCDF |
-| `--rain-var NAME` | Rain accumulation variable name (`RAIN_DELTA` / `DELTA_RAIN`) |
+| `--rain-var NAME` | Rain accumulation variable name (**only `DELTA_RAIN` is supported**) |
 | `--accum-hours H` | Accumulation window in hours (default 1.0) |
+| `--domain PATH` | Domain NetCDF defining the target grid (compliant with `cdl/domain.cdl`) |
 | `--no-sort` | Disable sorting by time |
 | `--no-dedupe` | Disable duplicate time removal |
 | `--log-level LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
@@ -126,12 +123,14 @@ Attributes include:
 - `standard_name = lwe_precipitation_rate`
 - `units = kg m-2 s-1`
 - `_FillValue` propagated from input (or default `1e37`)
+- Latitude/longitude copied from the supplied domain NetCDF
 
 ### Global attributes
 Includes:
 - `input_files`
 - `input_rain_variable`
 - `accumulation_period_hours`
+- `reference_domain` (absolute path to the domain NetCDF)
 
 ---
 
@@ -148,6 +147,6 @@ ds.rain_rate.isel(time=0).plot()
 
 ## Troubleshooting
 
-- **Grid mismatch**: ensure all inputs come from the same WRF domain/grid.
-- **Rain var missing**: pass `--rain-var RAIN_DELTA` or `--rain-var DELTA_RAIN`.
+- **Reference grid missing**: pass the correct `--domain` NetCDF that matches `cdl/domain.cdl`.
+- **Rain var missing**: the script only supports `DELTA_RAIN`; check your inputs.
 - **Duplicate times**: by default duplicates are removed; use `--no-dedupe` if needed.

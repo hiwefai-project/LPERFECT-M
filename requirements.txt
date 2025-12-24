@@ -12,3 +12,4 @@ scipy>=1.10.0
 # Optional (GeoTIFF input support)
 rioxarray>=0.15.0
 rasterio>=1.3.9
+shapely>=2.1.2

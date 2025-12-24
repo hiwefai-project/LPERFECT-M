@@ -12,8 +12,13 @@ import logging  # import logging
 # Import numpy.
 import numpy as np  # import numpy as np
 
+# Import datetime helpers.
+from datetime import timedelta  # import datetime import timedelta
+from pathlib import Path  # import pathlib import Path
+import os  # import os
+
 # Import local modules.
-from .time_utils import parse_iso8601_to_datetime64  # import .time_utils import parse_iso8601_to_datetime64
+from .time_utils import datetime_to_hours_since_1900, parse_iso8601_to_datetime64, parse_iso8601_to_utc_datetime  # import .time_utils import datetime_to_hours_since_1900, parse_iso8601_to_datetime64, parse_iso8601_to_utc_datetime
 from .d8 import build_downstream_index  # import .d8 import build_downstream_index
 from .rain import build_rain_sources, blended_rain_step_mm_rank0  # import .rain import build_rain_sources, blended_rain_step_mm_rank0
 from .runoff import scs_cn_cumulative_runoff_mm  # import .runoff import scs_cn_cumulative_runoff_mm
@@ -80,8 +85,9 @@ def run_simulation(comm: Any, rank: int, size: int, cfg: Dict[str, Any], dom: Do
             shared_cfg.min_particles_per_worker,
         )  # execute statement
 
-    # Start time for time-aware rain selection.
+    # Start time for time-aware rain selection and output timestamps.
     start_time = parse_iso8601_to_datetime64(mcfg.get("start_time", None))  # set start_time
+    start_datetime = parse_iso8601_to_utc_datetime(mcfg.get("start_time", None))  # set start_datetime
 
     # Domain shape.
     nrows, ncols = dom.dem.shape  # set nrows, ncols
@@ -142,6 +148,27 @@ def run_simulation(comm: Any, rank: int, size: int, cfg: Dict[str, Any], dom: Do
 
     # Rain sources configuration (replicated config, rank0 reads files).
     rain_sources = build_rain_sources(cfg)  # set rain_sources
+
+    # Output configuration.
+    output_cfg = cfg.get("output", {})  # set output_cfg
+    out_nc = output_cfg.get("out_netcdf", None)  # set out_nc
+    save_every_s = float(output_cfg.get("save_every_s", 0.0) or 0.0)  # set save_every_s
+    rotate_every_s = float(output_cfg.get("rotate_every_s", 0.0) or 0.0)  # set rotate_every_s
+    if save_every_s < 0.0 or rotate_every_s < 0.0:  # check condition save_every_s < 0.0 or rotate_every_s < 0.0:
+        raise ValueError("output.save_every_s and output.rotate_every_s must be non-negative.")  # raise ValueError("output.save_every_s and output.rotate_every_s must be non-negative.")
+    if save_every_s > 0.0 and rotate_every_s > 0.0:  # check condition save_every_s > 0.0 and rotate_every_s > 0.0:
+        raise ValueError("Configure only one of output.save_every_s or output.rotate_every_s.")  # raise ValueError("Configure only one of output.save_every_s or output.rotate_every_s.")
+    rotate_enabled = rotate_every_s > 0.0  # set rotate_enabled
+    output_interval_s = rotate_every_s if rotate_enabled else save_every_s  # set output_interval_s
+    if output_interval_s > 0.0 and not out_nc:  # check condition output_interval_s > 0.0 and not out_nc:
+        raise ValueError("output.out_netcdf must be set to enable periodic outputs.")  # raise ValueError("output.out_netcdf must be set to enable periodic outputs.")
+    output_file_initialized = False  # set output_file_initialized
+    rotation_index = 0  # set rotation_index
+    next_output_s: float | None = None  # set next_output_s
+
+    risk_cfg = cfg.get("risk", {})  # set risk_cfg
+    do_risk = bool(risk_cfg.get("enabled", True))  # set do_risk
+    risk_accum = None  # set risk_accum
 
     # ------------------------------
     # Initialize state (possibly from restart)
@@ -207,6 +234,108 @@ def run_simulation(comm: Any, rank: int, size: int, cfg: Dict[str, Any], dom: Do
 
         # Local slab bounds.
         r0, r1 = slab_bounds(nrows, size, rank)  # set r0, r1
+
+    # ------------------------------
+    # Output helpers and bookkeeping
+    # ------------------------------
+    if rotate_enabled and rotate_every_s > 0.0:  # check condition rotate_enabled and rotate_every_s > 0.0:
+        rotation_index = int(np.floor(elapsed_s0 / rotate_every_s))  # set rotation_index
+
+    if output_interval_s > 0.0:  # check condition output_interval_s > 0.0:
+        next_output_s = output_interval_s * (int(elapsed_s0 // output_interval_s) + 1)  # set next_output_s
+
+    output_written_any = False  # set output_written_any
+    output_written_on_final_step = False  # set output_written_on_final_step
+
+    def _output_time_hours(elapsed_s: float) -> float:
+        """Return simulation timestamp in CF time units."""
+        return datetime_to_hours_since_1900(start_datetime + timedelta(seconds=float(elapsed_s)))
+
+    def _rotated_out_path(idx: int) -> str:
+        """Build rotated output file path."""
+        base = Path(str(out_nc))
+        suffix = base.suffix or ".nc"
+        return str(base.with_name(f"{base.stem}_{idx:04d}{suffix}"))
+
+    def _prepare_output_target() -> tuple[str, str]:
+        """Return (path, mode) for the next output write."""
+        nonlocal output_file_initialized, rotation_index
+        if rotate_enabled:
+            path = _rotated_out_path(rotation_index)
+            rotation_index += 1
+            if rank == 0 and os.path.exists(path):
+                os.remove(path)
+            return path, "w"
+
+        if not out_nc:
+            raise ValueError("Output NetCDF path not set.")
+
+        if not output_file_initialized:
+            if rank == 0 and os.path.exists(out_nc):
+                os.remove(out_nc)
+            output_file_initialized = True
+            return str(out_nc), "w"
+
+        return str(out_nc), "a"
+
+    def _flood_from_volume(volgrid: np.ndarray) -> np.ndarray:
+        """Convert cell volumes to depth, masking inactive cells."""
+        if np.isscalar(dom.cell_area_m2):
+            flood_depth = volgrid / float(dom.cell_area_m2)
+        else:
+            flood_depth = np.divide(volgrid, dom.cell_area_m2, out=np.zeros_like(volgrid), where=(dom.cell_area_m2 > 0))
+        return np.where(dom.active_mask, flood_depth, np.nan)
+
+    def _compute_risk_field(runoff_mm: np.ndarray, flood_depth: np.ndarray) -> np.ndarray:
+        """Compute risk index if enabled, otherwise fill with NaNs."""
+        nonlocal risk_accum
+        if not do_risk:
+            return np.full_like(flood_depth, np.nan, dtype=np.float64)
+        if risk_accum is None:
+            risk_accum = compute_flow_accum_area_m2(dom.d8, encoding, dom.cell_area_m2, dom.active_mask)
+        return compute_risk_index(
+            runoff_cum_mm=runoff_mm,
+            flow_accum_m2=risk_accum,
+            active_mask=dom.active_mask,
+            balance=float(risk_cfg.get("balance", 0.55)),
+            p_low=float(risk_cfg.get("p_low", 5.0)),
+            p_high=float(risk_cfg.get("p_high", 95.0)),
+        )
+
+    def _gather_outputs_for_rank0() -> tuple[np.ndarray | None, np.ndarray | None]:
+        """Gather flood depth and risk to rank0 (or return locally in serial)."""
+        if size == 1:
+            volgrid = local_volgrid_from_particles_slab(particles, r0=0, r1=nrows, ncols=ncols, shared_cfg=shared_cfg)
+            flood_depth = _flood_from_volume(volgrid)
+            risk_field = _compute_risk_field(Q_slab, flood_depth)
+            return flood_depth, risk_field
+
+        volgrid_slab = local_volgrid_from_particles_slab(particles, r0=r0, r1=r1, ncols=ncols, shared_cfg=shared_cfg)
+        vol_full = gather_field_slab_to_rank0(comm, volgrid_slab, nrows, ncols)
+        Q_full = gather_field_slab_to_rank0(comm, Q_slab, nrows, ncols)
+        if rank == 0:
+            flood_depth = _flood_from_volume(vol_full)
+            risk_field = _compute_risk_field(Q_full, flood_depth)
+            return flood_depth, risk_field
+        return None, None
+
+    def _write_output(elapsed_s: float) -> bool:
+        """Compute and write outputs for the given elapsed time."""
+        if not out_nc:
+            return False
+        out_path, mode = _prepare_output_target()
+        flood_depth, risk_field = _gather_outputs_for_rank0()
+        if rank == 0 and flood_depth is not None and risk_field is not None:
+            write_results_netcdf_rank0(
+                out_path,
+                cfg,
+                dom,
+                flood_depth,
+                risk_field,
+                time_hours=_output_time_hours(elapsed_s),
+                mode=mode,
+            )
+        return True
 
     # ------------------------------
     # Main time loop
@@ -361,64 +490,36 @@ def run_simulation(comm: Any, rank: int, size: int, cfg: Dict[str, Any], dom: Do
                         particles_all=particles_all,  # set particles_all
                     )  # execute statement
 
+        # Periodic output writing if requested.
+        is_last_step = (k + 1) == steps
+        outputs_written_this_step = False
+        if output_interval_s > 0.0 and next_output_s is not None:
+            while step_time_s + 1e-9 >= next_output_s:
+                wrote = _write_output(step_time_s)
+                outputs_written_this_step = outputs_written_this_step or wrote
+                output_written_any = output_written_any or wrote
+                if is_last_step:
+                    output_written_on_final_step = output_written_on_final_step or wrote
+                next_output_s += output_interval_s
+
+        if is_last_step and out_nc:
+            if output_interval_s <= 0.0 or not outputs_written_this_step:
+                if _write_output(step_time_s):
+                    output_written_any = True
+                    output_written_on_final_step = True
+
     # ------------------------------
-    # Final output gathering and writing (rank0)
+    # Final output guard (in case no write happened yet)
     # ------------------------------
-    out_nc = cfg.get("output", {}).get("out_netcdf", None)  # set out_nc
+    final_elapsed_s = elapsed_s0 + remaining_s  # set final_elapsed_s
     if not out_nc:  # check condition not out_nc:
         if rank == 0:  # check condition rank == 0:
             logger.info("No output.out_netcdf configured; skipping final output.")  # execute statement
         return  # return value
 
-    risk_cfg = cfg.get("risk", {})  # set risk_cfg
-    do_risk = bool(risk_cfg.get("enabled", True))  # set do_risk
+    if steps == 0 and not output_written_any:  # check condition steps == 0 and not output_written_any:
+        _write_output(final_elapsed_s)  # execute statement
+        return  # return value
 
-    if size == 1:  # check condition size == 1:
-        volgrid = local_volgrid_from_particles_slab(particles, r0=0, r1=nrows, ncols=ncols, shared_cfg=shared_cfg)  # set volgrid
-        if np.isscalar(dom.cell_area_m2):  # check condition np.isscalar(dom.cell_area_m2):
-            flood = volgrid / float(dom.cell_area_m2)  # set flood
-        else:  # fallback branch
-            flood = np.divide(volgrid, dom.cell_area_m2, out=np.zeros_like(volgrid), where=(dom.cell_area_m2 > 0))  # set flood
-        flood = np.where(dom.active_mask, flood, np.nan)  # set flood
-
-        if do_risk:  # check condition do_risk:
-            acc = compute_flow_accum_area_m2(dom.d8, encoding, dom.cell_area_m2, dom.active_mask)  # set acc
-            risk = compute_risk_index(  # set risk
-                runoff_cum_mm=Q_slab,  # set runoff_cum_mm
-                flow_accum_m2=acc,  # set flow_accum_m2
-                active_mask=dom.active_mask,  # set active_mask
-                balance=float(risk_cfg.get("balance", 0.55)),  # set balance
-                p_low=float(risk_cfg.get("p_low", 5.0)),  # set p_low
-                p_high=float(risk_cfg.get("p_high", 95.0)),  # set p_high
-            )  # execute statement
-        else:  # fallback branch
-            risk = np.full_like(flood, np.nan, dtype=np.float64)  # set risk
-
-        write_results_netcdf_rank0(out_nc, cfg, dom, flood, risk)  # execute statement
-
-    else:  # fallback branch
-        Q_full = gather_field_slab_to_rank0(comm, Q_slab, nrows, ncols)  # set Q_full
-        volgrid_slab = local_volgrid_from_particles_slab(particles, r0=r0, r1=r1, ncols=ncols, shared_cfg=shared_cfg)  # set volgrid_slab
-        vol_full = gather_field_slab_to_rank0(comm, volgrid_slab, nrows, ncols)  # set vol_full
-
-        if rank == 0:  # check condition rank == 0:
-            if np.isscalar(dom.cell_area_m2):  # check condition np.isscalar(dom.cell_area_m2):
-                flood = vol_full / float(dom.cell_area_m2)  # type: ignore[operator]  # set flood
-            else:  # fallback branch
-                flood = np.divide(vol_full, dom.cell_area_m2, out=np.zeros_like(vol_full), where=(dom.cell_area_m2 > 0))  # type: ignore[arg-type]  # set flood
-            flood = np.where(dom.active_mask, flood, np.nan)  # set flood
-
-            if do_risk:  # check condition do_risk:
-                acc = compute_flow_accum_area_m2(dom.d8, encoding, dom.cell_area_m2, dom.active_mask)  # set acc
-                risk = compute_risk_index(  # set risk
-                    runoff_cum_mm=Q_full,  # type: ignore[arg-type]  # set runoff_cum_mm
-                    flow_accum_m2=acc,  # set flow_accum_m2
-                    active_mask=dom.active_mask,  # set active_mask
-                    balance=float(risk_cfg.get("balance", 0.55)),  # set balance
-                    p_low=float(risk_cfg.get("p_low", 5.0)),  # set p_low
-                    p_high=float(risk_cfg.get("p_high", 95.0)),  # set p_high
-                )  # execute statement
-            else:  # fallback branch
-                risk = np.full_like(flood, np.nan, dtype=np.float64)  # set risk
-
-            write_results_netcdf_rank0(out_nc, cfg, dom, flood, risk)  # execute statement
+    if not output_written_on_final_step:  # check condition not output_written_on_final_step:
+        _write_output(final_elapsed_s)  # execute statement

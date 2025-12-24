@@ -233,6 +233,11 @@ Expected variables:
 - `risk_index(time,latitude,longitude)` dimensionless
 - `time(time)` coordinate in `hours since 1900-01-01 00:00:0.0`
 
+When `output.save_every_s > 0`, the model **appends** a new `time` slice to the
+same NetCDF on the requested cadence (final state is always written). If
+`output.rotate_every_s > 0`, a new NetCDF is written each interval using the
+`output.out_netcdf` basename with `_0000.nc`, `_0001.nc`, … suffixes.
+
 The output includes a `crs` grid-mapping variable (`grid_mapping_name`, `epsg_code`)
 referenced by `flood_depth` and `risk_index`.
 

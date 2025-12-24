@@ -6,9 +6,6 @@
 # Import JSON for embedding config as provenance attribute.
 import json  # import json
 
-# Import datetime utilities for time encoding.
-from datetime import datetime, timezone  # import datetime, timezone
-
 # Import typing primitives.
 from typing import Any, Dict  # import typing import Any, Dict
 
@@ -19,7 +16,7 @@ import numpy as np  # import numpy as np
 import xarray as xr  # import xarray as xr
 
 # Import local time helper.
-from .time_utils import datetime_to_hours_since_1900, utc_now_iso  # import .time_utils import datetime_to_hours_since_1900, utc_now_iso
+from .time_utils import utc_now_iso  # import .time_utils import utc_now_iso
 
 # Import CF schema constants.
 from .cf_schema import CF_CONVENTIONS, RAIN_TIME_UNITS  # import .cf_schema import CF_CONVENTIONS, RAIN_TIME_UNITS
@@ -29,19 +26,6 @@ from .domain import Domain  # import .domain import Domain
 from .particles import Particles  # import .particles import Particles
 
 TIME_UNITS = RAIN_TIME_UNITS  # execute statement
-
-
-def _parse_iso_datetime(value: str | None) -> datetime:  # define function _parse_iso_datetime
-    """Parse ISO-8601 string into UTC datetime, fallback to now."""  # execute statement
-    if not value:  # check condition not value:
-        return datetime.now(timezone.utc)  # return datetime.now(timezone.utc)
-    text = value.strip()  # set text
-    if text.endswith("Z"):  # check condition text.endswith("Z"):
-        text = text[:-1] + "+00:00"  # set text
-    dt = datetime.fromisoformat(text)  # set dt
-    if dt.tzinfo is None:  # check condition dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)  # set dt
-    return dt.astimezone(timezone.utc)  # return dt.astimezone(timezone.utc)
 
 
 def _coord_attrs(name: str) -> Dict[str, str]:  # define function _coord_attrs
@@ -55,19 +39,20 @@ def _coord_attrs(name: str) -> Dict[str, str]:  # define function _coord_attrs
 
 
 def write_results_netcdf_rank0(out_path: str, cfg: Dict[str, Any], dom: Domain,  # define function write_results_netcdf_rank0
-                              flood_depth_m: np.ndarray, risk_index: np.ndarray) -> None:  # execute statement
-    """Write final results in CF-friendly NetCDF."""  # execute statement
+                              flood_depth_m: np.ndarray, risk_index: np.ndarray, time_hours: float, mode: str = "w") -> None:  # execute statement
+    """Write results in CF-friendly NetCDF (append-safe on time axis)."""  # execute statement
     out_cfg = cfg.get("output", {})  # set out_cfg
 
     ds = xr.Dataset()  # set ds
-    time_value = datetime_to_hours_since_1900(_parse_iso_datetime(cfg.get("model", {}).get("start_time")))  # execute statement
     fill_value = float(out_cfg.get("fill_value", -9999.0))  # set fill_value
 
-    ds = ds.assign_coords({  # set ds
-        "time": xr.DataArray(np.array([time_value], dtype=np.int32), dims=("time",), attrs={"description": "Time", "long_name": "time", "units": TIME_UNITS}),  # execute statement
-        dom.x_name: xr.DataArray(dom.x_vals, dims=(dom.x_name,), attrs=_coord_attrs(dom.x_name)),  # execute statement
-        dom.y_name: xr.DataArray(dom.y_vals, dims=(dom.y_name,), attrs=_coord_attrs(dom.y_name)),  # execute statement
-    })  # execute statement
+    ds = ds.assign_coords(  # set ds
+        {  # execute statement
+            "time": xr.DataArray(np.array([time_hours], dtype=np.float64), dims=("time",), attrs={"description": "Time", "long_name": "time", "units": TIME_UNITS}),  # execute statement
+            dom.x_name: xr.DataArray(dom.x_vals, dims=(dom.x_name,), attrs=_coord_attrs(dom.x_name)),  # execute statement
+            dom.y_name: xr.DataArray(dom.y_vals, dims=(dom.y_name,), attrs=_coord_attrs(dom.y_name)),  # execute statement
+        }  # execute statement
+    )  # execute statement
 
     ds["flood_depth"] = xr.DataArray(  # execute statement
         flood_depth_m.astype(np.float32)[None, ...],  # execute statement
@@ -101,7 +86,10 @@ def write_results_netcdf_rank0(out_path: str, cfg: Dict[str, Any], dom: Domain, 
     ds.attrs["Conventions"] = out_cfg.get("Conventions", CF_CONVENTIONS)  # execute statement
     ds.attrs["lperfect_config_json"] = json.dumps(cfg, separators=(",", ":"), sort_keys=True)  # execute statement
 
-    ds.to_netcdf(out_path, encoding={"flood_depth": {"_FillValue": fill_value}, "risk_index": {"_FillValue": fill_value}})  # execute statement
+    to_netcdf_kwargs: Dict[str, Any] = {"encoding": {"flood_depth": {"_FillValue": fill_value}, "risk_index": {"_FillValue": fill_value}}, "mode": mode}  # set to_netcdf_kwargs
+    if mode == "a":  # check condition mode == "a":
+        to_netcdf_kwargs["unlimited_dims"] = ("time",)  # execute statement
+    ds.to_netcdf(out_path, **to_netcdf_kwargs)  # execute statement
 
 
 def save_restart_netcdf_rank0(out_path: str, cfg: Dict[str, Any], dom: Domain,  # define function save_restart_netcdf_rank0

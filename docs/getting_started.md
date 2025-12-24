@@ -191,6 +191,9 @@ Key fields:
 - `model.encoding` → `esri` or `cw0_7`
 - Rainfall source paths
 - Simulation start time and duration
+- Output cadence via `output.save_every_s` (append to one file) or `output.rotate_every_s`
+  (write a new file with `_0000.nc`, `_0001.nc`, … suffixes) — set to `0` to keep only
+  the final snapshot.
 
 Outputs and restarts can be controlled via CLI options.
 

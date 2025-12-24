@@ -100,6 +100,8 @@ def default_config() -> Dict[str, Any]:  # define function default_config
         },  # execute statement
         "output": {  # execute statement
             "out_netcdf": "flood_depth.nc",  # execute statement
+            "save_every_s": 0,  # execute statement
+            "rotate_every_s": 0,  # execute statement
             "Conventions": CF_CONVENTIONS,  # execute statement
             "title": "LPERFECT flood depth + hydrogeological risk index",  # execute statement
             "institution": "UniParthenope",  # execute statement

@@ -44,11 +44,24 @@ def parse_iso8601_to_datetime64(s: str | None) -> np.datetime64 | None:  # defin
     return np.datetime64(dt_utc)  # return np.datetime64(dt_utc)
 
 
-def datetime_to_hours_since_1900(dt: datetime) -> int:  # define function datetime_to_hours_since_1900
-    """Convert datetime to integer hours since 1900-01-01 UTC."""  # execute statement
+def parse_iso8601_to_utc_datetime(value: str | None) -> datetime:  # define function parse_iso8601_to_utc_datetime
+    """Parse ISO-8601 string into an aware UTC datetime (fallback: now)."""  # execute statement
+    if not value:  # check condition not value:
+        return datetime.now(timezone.utc)  # return datetime.now(timezone.utc)
+    text = value.strip()  # set text
+    if text.endswith("Z"):  # check condition text.endswith("Z"):
+        text = text[:-1] + "+00:00"  # set text
+    dt = datetime.fromisoformat(text)  # set dt
+    if dt.tzinfo is None:  # check condition dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)  # set dt
+    return dt.astimezone(timezone.utc)  # return dt.astimezone(timezone.utc)
+
+
+def datetime_to_hours_since_1900(dt: datetime) -> float:  # define function datetime_to_hours_since_1900
+    """Convert datetime to hours since 1900-01-01 UTC."""  # execute statement
     base = datetime(1900, 1, 1, tzinfo=timezone.utc)  # set base
     hours = (dt - base).total_seconds() / 3600.0  # set hours
-    return int(round(hours))  # return int(round(hours))
+    return float(hours)  # return float(hours)
 
 
 def rain_time_units() -> str:  # define function rain_time_units

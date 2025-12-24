@@ -68,6 +68,8 @@
   },
   "output": {
     "out_netcdf": "flood_depth.nc",
+    "save_every_s": 0,
+    "rotate_every_s": 0,
     "Conventions": "CF-1.10",
     "title": "LPERFECT flood depth + hydrogeological risk index",
     "institution": "UniParthenope"

@@ -70,6 +70,11 @@ python main.py --config config.json --restart-in restart_state.nc
 python main.py --config config.json --restart-out restart_state.nc
 ```
 
+Output cadence:
+- `output.save_every_s`: append a new time slice to the configured NetCDF every N simulated seconds (e.g., `3600` for hourly snapshots).
+- `output.rotate_every_s`: write a new NetCDF every N simulated seconds, using the `output.out_netcdf` basename with `_0000.nc`, `_0001.nc`, ... suffixes.
+- The final state is always written, even if it does not align exactly with the interval.
+
 ## Input NetCDFs
 
 ### 5.1 Domain NetCDF (`domain.domain_nc`)

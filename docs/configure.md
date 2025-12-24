@@ -384,9 +384,13 @@ Controls final NetCDF output metadata and paths.
 | Key | Default | Description | Example |
 | --- | --- | --- | --- |
 | `output.out_netcdf` | `flood_depth.nc` | Final output NetCDF path. | `"out_netcdf": "outputs/flood_depth.nc"` |
+| `output.save_every_s` | `0` | Append a new time slice to the same NetCDF every N simulated seconds (`0` disables periodic writes). | `"save_every_s": 3600` |
+| `output.rotate_every_s` | `0` | Write a brand-new NetCDF every N simulated seconds, using the `out_netcdf` basename plus `_0000.nc`, `_0001.nc`, ... | `"rotate_every_s": 1800` |
 | `output.Conventions` | `CF-1.10` | CF metadata convention string. | `"Conventions": "CF-1.8"` |
 | `output.title` | `LPERFECT flood depth + hydrogeological risk index` | Global title attribute. | `"title": "LPERFECT flood run"` |
 | `output.institution` | `UniParthenope` | Global institution attribute. | `"institution": "My Lab"` |
+
+> Configure **either** `save_every_s` **or** `rotate_every_s` (not both). The final state is always written even if it does not land exactly on the requested cadence.
 
 **Example:**
 
@@ -394,6 +398,7 @@ Controls final NetCDF output metadata and paths.
 {
   "output": {
     "out_netcdf": "flood_depth.nc",
+    "save_every_s": 3600,
     "Conventions": "CF-1.10",
     "title": "LPERFECT flood depth",
     "institution": "UniParthenope"

@@ -14,6 +14,29 @@ from .particles import Particles, empty_particles  # import .particles import Pa
 from .shared_memory import SharedMemoryConfig, chunk_bounds, should_parallelize  # import .shared_memory import SharedMemoryConfig, chunk_bounds, should_parallelize
 
 
+def _travel_time_increment(  # define function _travel_time_increment
+    travel_time_s: float | np.ndarray,  # execute statement
+    travel_time_channel_s: float | np.ndarray,  # execute statement
+    channel_mask: Optional[np.ndarray],  # execute statement
+    r_idx: np.ndarray,  # execute statement
+    c_idx: np.ndarray,  # execute statement
+) -> np.ndarray:  # execute statement
+    """Return per-particle travel time increment for destination cells."""  # execute statement
+    if channel_mask is None:  # check condition channel_mask is None:
+        if np.isscalar(travel_time_s):  # check condition np.isscalar(travel_time_s):
+            return np.full_like(r_idx, float(travel_time_s), dtype=np.float64)  # return np.full_like(r_idx, float(travel_time_s), dtype=np.float64)
+        return travel_time_s[r_idx, c_idx].astype(np.float64)  # return travel_time_s[r_idx, c_idx].astype(np.float64)
+
+    is_ch = channel_mask[r_idx, c_idx]  # set is_ch
+
+    def _lookup(tt: float | np.ndarray) -> np.ndarray:  # define function _lookup
+        if np.isscalar(tt):  # check condition np.isscalar(tt):
+            return np.full_like(r_idx, float(tt), dtype=np.float64)  # return np.full_like(r_idx, float(tt), dtype=np.float64)
+        return tt[r_idx, c_idx].astype(np.float64)  # return tt[r_idx, c_idx].astype(np.float64)
+
+    return np.where(is_ch, _lookup(travel_time_channel_s), _lookup(travel_time_s))  # return np.where(is_ch, _lookup(travel_time_channel_s), _lookup(travel_time_s))
+
+
 def cell_area_at(area: float | np.ndarray, rr: np.ndarray, cc: np.ndarray) -> np.ndarray:  # define function cell_area_at
     """Return cell area(s) for indices rr,cc."""  # execute statement
     if np.isscalar(area):  # check condition np.isscalar(area):
@@ -63,8 +86,8 @@ def advect_particles_one_step(  # define function advect_particles_one_step
     ds_r: np.ndarray,  # execute statement
     ds_c: np.ndarray,  # execute statement
     dt_s: float,  # execute statement
-    travel_time_s: float,  # execute statement
-    travel_time_channel_s: float,  # execute statement
+    travel_time_s: float | np.ndarray,  # execute statement
+    travel_time_channel_s: float | np.ndarray,  # execute statement
     channel_mask: Optional[np.ndarray],  # execute statement
     outflow_sink: bool,  # execute statement
     shared_cfg: Optional["SharedMemoryConfig"] = None,  # execute statement
@@ -97,11 +120,8 @@ def advect_particles_one_step(  # define function advect_particles_one_step
             particles.r[moved] = rds  # execute statement
             particles.c[moved] = cds  # execute statement
 
-            if channel_mask is not None:  # check condition channel_mask is not None:
-                is_ch = channel_mask[rds, cds]  # set is_ch
-                particles.tau[moved] = particles.tau[moved] + np.where(is_ch, travel_time_channel_s, travel_time_s)  # execute statement
-            else:  # fallback branch
-                particles.tau[moved] = particles.tau[moved] + travel_time_s  # execute statement
+            tau_inc = _travel_time_increment(travel_time_s, travel_time_channel_s, channel_mask, rds, cds)  # set tau_inc
+            particles.tau[moved] = particles.tau[moved] + tau_inc  # execute statement
 
         outflow_vol = 0.0  # set outflow_vol
         if outflow_sink and np.any(~v):  # check condition outflow_sink and np.any(~v):
@@ -151,11 +171,8 @@ def advect_particles_one_step(  # define function advect_particles_one_step
             moved_local = idx_local[v]
             r_chunk[moved_local] = rds
             c_chunk[moved_local] = cds
-            if channel_mask is not None:
-                is_ch = channel_mask[rds, cds]
-                tau_chunk[moved_local] = tau_chunk[moved_local] + np.where(is_ch, travel_time_channel_s, travel_time_s)
-            else:
-                tau_chunk[moved_local] = tau_chunk[moved_local] + travel_time_s
+            tau_inc = _travel_time_increment(travel_time_s, travel_time_channel_s, channel_mask, rds, cds)
+            tau_chunk[moved_local] = tau_chunk[moved_local] + tau_inc
 
         outflow_vol_local = 0.0
         if outflow_sink and np.any(~v):

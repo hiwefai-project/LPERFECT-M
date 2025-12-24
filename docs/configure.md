@@ -197,6 +197,11 @@ Controls the core simulation parameters.
 | `model.particle_vol_m3` | `0.25` | Target particle volume for Lagrangian routing (m³). | `"particle_vol_m3": 0.1` |
 | `model.travel_time_s` | `5` | Hillslope travel time per D8 hop (seconds). | `"travel_time_s": 10` |
 | `model.travel_time_channel_s` | `1` | Channel travel time per D8 hop (seconds). | `"travel_time_channel_s": 2` |
+| `model.travel_time_mode` | `fixed` | Travel time calculation mode: `fixed` uses the scalar values above, `auto` derives hop times from cell area and user-provided velocities. | `"travel_time_mode": "auto"` |
+| `model.travel_time_auto.hillslope_velocity_ms` | `0.5` | Mean hillslope velocity (m/s) used when `travel_time_mode = "auto"`. | `1.0` |
+| `model.travel_time_auto.channel_velocity_ms` | `1.5` | Mean channel velocity (m/s) used when `travel_time_mode = "auto"`. | `2.5` |
+| `model.travel_time_auto.min_s` | `0.25` | Lower clamp for automatically derived travel times (seconds). | `0.5` |
+| `model.travel_time_auto.max_s` | `3600.0` | Upper clamp for automatically derived travel times (seconds). | `900.0` |
 | `model.outflow_sink` | `true` | Drop particles that flow out of the domain. | `"outflow_sink": false` |
 | `model.log_every` | `10` | Log diagnostic output every N steps (`0` to disable). | `"log_every": 20` |
 
@@ -213,6 +218,13 @@ Controls the core simulation parameters.
     "particle_vol_m3": 0.2,
     "travel_time_s": 8,
     "travel_time_channel_s": 2,
+    "travel_time_mode": "auto",
+    "travel_time_auto": {
+      "hillslope_velocity_ms": 0.75,
+      "channel_velocity_ms": 2.0,
+      "min_s": 0.5,
+      "max_s": 1800.0
+    },
     "outflow_sink": true,
     "log_every": 50
   }

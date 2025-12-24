@@ -52,6 +52,13 @@ def default_config() -> Dict[str, Any]:  # define function default_config
             "particle_vol_m3": 0.25,  # execute statement
             "travel_time_s": 5,  # execute statement
             "travel_time_channel_s": 1,  # execute statement
+            "travel_time_mode": "fixed",  # execute statement
+            "travel_time_auto": {  # execute statement
+                "hillslope_velocity_ms": 0.5,  # execute statement
+                "channel_velocity_ms": 1.5,  # execute statement
+                "min_s": 0.25,  # execute statement
+                "max_s": 3600.0,  # execute statement
+            },  # execute statement
             "outflow_sink": True,  # execute statement
             "log_every": 10,  # execute statement
         },  # execute statement

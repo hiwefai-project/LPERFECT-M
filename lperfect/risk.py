@@ -66,4 +66,5 @@ def compute_risk_index(runoff_cum_mm: np.ndarray, flow_accum_m2: np.ndarray, act
     alpha = float(np.clip(balance, 0.0, 1.0))  # set alpha
     r1 = robust_normalize(runoff_cum_mm, active_mask, p_low, p_high)  # set r1
     r2 = robust_normalize(flow_accum_m2, active_mask, p_low, p_high)  # set r2
-    return np.where(active_mask, alpha * r1 + (1.0 - alpha) * r2, np.nan)  # return np.where(active_mask, alpha * r1 + (1.0 - alpha) * r2, np.nan)
+    blended = alpha * r1 + (1.0 - alpha) * (r1 * r2)  # set blended
+    return np.where(active_mask, blended, np.nan)  # return np.where(active_mask, blended, np.nan)

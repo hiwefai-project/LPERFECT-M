@@ -170,7 +170,7 @@ LPERFECT computes a **dimensionless hydrogeological risk index** combining:
 The risk index is defined as:
 
 \[
-R = \beta \, \hat{Q} + (1 - \beta) \, \hat{A}
+R = \beta \, \hat{Q} + (1 - \beta) \, (\hat{Q} \cdot \hat{A})
 \]
 
 where:

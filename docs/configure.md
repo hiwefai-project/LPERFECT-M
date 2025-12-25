@@ -385,7 +385,7 @@ runoff and flow accumulation.
 | Key | Default | Description | Example |
 | --- | --- | --- | --- |
 | `risk.enabled` | `true` | Whether to compute `risk_index` in the output. | `"enabled": false` |
-| `risk.balance` | `0.55` | Weighting between runoff (1.0) and flow accumulation (0.0). Clipped to `[0, 1]`. | `"balance": 0.7` |
+| `risk.balance` | `0.55` | Weighting between normalized runoff (1.0) and the multiplicative coupling of runoff and flow accumulation (0.0). Clipped to `[0, 1]`. | `"balance": 0.7` |
 | `risk.p_low` | `5.0` | Lower percentile for robust normalization. | `"p_low": 2.0` |
 | `risk.p_high` | `95.0` | Upper percentile for robust normalization. | `"p_high": 98.0` |
 

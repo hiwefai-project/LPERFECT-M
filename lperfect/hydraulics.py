@@ -10,7 +10,7 @@ from typing import Optional, Tuple  # import typing import Optional, Tuple
 import numpy as np  # import numpy as np
 
 # Import local particle structures.
-from .particles import Particles, empty_particles  # import .particles import Particles, empty_particles
+from .particles import Particles, concat_particles, empty_particles  # import .particles import Particles, concat_particles, empty_particles
 from .shared_memory import SharedMemoryConfig, chunk_bounds, should_parallelize  # import .shared_memory import SharedMemoryConfig, chunk_bounds, should_parallelize
 
 
@@ -92,11 +92,12 @@ def advect_particles_one_step(  # define function advect_particles_one_step
     outflow_sink: bool,  # execute statement
     shared_cfg: Optional["SharedMemoryConfig"] = None,  # execute statement
     track_outflow_points: bool = False,  # execute statement
-    ) -> Tuple[Particles, float, int, dict[tuple[int, int], int]]:  # execute statement
+    return_outflow_particles: bool = False,  # execute statement
+    ) -> Tuple[Particles, float, int, dict[tuple[int, int], int], Particles]:  # execute statement
     """Advance particles one step, with travel-time gating and optional outflow tracking."""  # execute statement
     n = particles.r.size  # set n
     if n == 0:  # check condition particles.r.size == 0:
-        return particles, 0.0, 0, {}  # return particles, 0.0, 0, {}
+        return particles, 0.0, 0, {}, empty_particles()  # return particles, 0.0, 0, {}, empty_particles()
 
     # Fast serial path for small workloads.
     if not should_parallelize(n, shared_cfg):  # check condition not should_parallelize(n, shared_cfg):
@@ -126,8 +127,16 @@ def advect_particles_one_step(  # define function advect_particles_one_step
 
         outflow_vol = 0.0  # set outflow_vol
         outflow_points: dict[tuple[int, int], int] = {}  # execute statement
+        outflow_particles = empty_particles()  # execute statement
         if outflow_sink and np.any(~v):  # check condition outflow_sink and np.any(~v):
             drop = idx[~v]  # set drop
+            if return_outflow_particles:  # check condition return_outflow_particles:
+                outflow_particles = Particles(  # set outflow_particles
+                    r=particles.r[drop].copy(),  # set r
+                    c=particles.c[drop].copy(),  # set c
+                    vol=particles.vol[drop].copy(),  # set vol
+                    tau=particles.tau[drop].copy(),  # set tau
+                )  # execute statement
             outflow_vol = float(particles.vol[drop].sum())  # set outflow_vol
             if track_outflow_points:  # check condition track_outflow_points:
                 r_drop = r0[~v]  # set r_drop
@@ -143,7 +152,7 @@ def advect_particles_one_step(  # define function advect_particles_one_step
                 tau=particles.tau[keep],  # set tau
             )  # execute statement
 
-        return particles, outflow_vol, nhops, outflow_points  # return particles, outflow_vol, nhops, outflow_points
+        return particles, outflow_vol, nhops, outflow_points, outflow_particles  # return particles, outflow_vol, nhops, outflow_points, outflow_particles
 
     # Shared-memory parallel path: work on slices, then concatenate to preserve determinism.
     from concurrent.futures import ThreadPoolExecutor  # import concurrent.futures import ThreadPoolExecutor
@@ -156,7 +165,7 @@ def advect_particles_one_step(  # define function advect_particles_one_step
     vol_full = particles.vol.copy()  # set vol_full
     tau_full = particles.tau.copy() - dt_s  # set tau_full
 
-    def _process_chunk(start: int, end: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, int, dict[tuple[int, int], int]]:
+    def _process_chunk(start: int, end: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, int, dict[tuple[int, int], int], Particles]:
         r_chunk = r_full[start:end].copy()
         c_chunk = c_full[start:end].copy()
         vol_chunk = vol_full[start:end].copy()
@@ -172,6 +181,7 @@ def advect_particles_one_step(  # define function advect_particles_one_step
         v = valid[r0, c0]
         nhops_local = int(np.count_nonzero(v))
         out_points_local: dict[tuple[int, int], int] = {}
+        out_particles_local = empty_particles()
 
         if np.any(v):
             rds = ds_r[r0[v], c0[v]]
@@ -186,6 +196,13 @@ def advect_particles_one_step(  # define function advect_particles_one_step
         if outflow_sink and np.any(~v):
             drop = idx_local[~v]
             outflow_vol_local = float(vol_chunk[drop].sum())
+            if return_outflow_particles:
+                out_particles_local = Particles(
+                    r=r_chunk[drop].copy(),
+                    c=c_chunk[drop].copy(),
+                    vol=vol_chunk[drop].copy(),
+                    tau=tau_chunk[drop].copy(),
+                )
             if track_outflow_points:
                 r_drop = r0[~v]
                 c_drop = c0[~v]
@@ -198,7 +215,7 @@ def advect_particles_one_step(  # define function advect_particles_one_step
             vol_chunk = vol_chunk[keep_mask]
             tau_chunk = tau_chunk[keep_mask]
 
-        return r_chunk, c_chunk, vol_chunk, tau_chunk, outflow_vol_local, nhops_local, out_points_local
+        return r_chunk, c_chunk, vol_chunk, tau_chunk, outflow_vol_local, nhops_local, out_points_local, out_particles_local
 
     results = []
     with ThreadPoolExecutor(max_workers=shared_cfg.workers) as ex:
@@ -206,16 +223,21 @@ def advect_particles_one_step(  # define function advect_particles_one_step
         for fut in futures:
             results.append(fut.result())
 
-    r_out = np.concatenate([r for r, _, _, _, _, _, _ in results]) if results else np.zeros(0, dtype=np.int32)
-    c_out = np.concatenate([c for _, c, _, _, _, _, _ in results]) if results else np.zeros(0, dtype=np.int32)
-    vol_out = np.concatenate([v for _, _, v, _, _, _, _ in results]) if results else np.zeros(0, dtype=np.float64)
-    tau_out = np.concatenate([t for _, _, _, t, _, _, _ in results]) if results else np.zeros(0, dtype=np.float64)
+    r_out = np.concatenate([r for r, _, _, _, _, _, _, _ in results]) if results else np.zeros(0, dtype=np.int32)
+    c_out = np.concatenate([c for _, c, _, _, _, _, _, _ in results]) if results else np.zeros(0, dtype=np.int32)
+    vol_out = np.concatenate([v for _, _, v, _, _, _, _, _ in results]) if results else np.zeros(0, dtype=np.float64)
+    tau_out = np.concatenate([t for _, _, _, t, _, _, _, _ in results]) if results else np.zeros(0, dtype=np.float64)
 
-    outflow_vol = float(sum(o for _, _, _, _, o, _, _ in results))
-    nhops = int(sum(h for _, _, _, _, _, h, _ in results))
+    outflow_particles = empty_particles()
+    for _, _, _, _, _, _, _, out_parts_local in results:
+        if out_parts_local.r.size:
+            outflow_particles = concat_particles(outflow_particles, out_parts_local)
+
+    outflow_vol = float(sum(o for _, _, _, _, o, _, _, _ in results))
+    nhops = int(sum(h for _, _, _, _, _, h, _, _ in results))
     out_points: dict[tuple[int, int], int] = {}
     if track_outflow_points:
-        for _, _, _, _, _, _, pts in results:
+        for _, _, _, _, _, _, pts, _ in results:
             for key, val in pts.items():
                 out_points[key] = out_points.get(key, 0) + int(val)
 
@@ -224,7 +246,8 @@ def advect_particles_one_step(  # define function advect_particles_one_step
         outflow_vol,
         nhops,
         out_points,
-    )  # return (...), outflow_vol, nhops, out_points
+        outflow_particles,
+    )  # return (...), outflow_vol, nhops, out_points, outflow_particles
 
 
 def local_volgrid_from_particles_slab(p: Particles, r0: int, r1: int, ncols: int, shared_cfg: Optional["SharedMemoryConfig"] = None) -> np.ndarray:  # define function local_volgrid_from_particles_slab

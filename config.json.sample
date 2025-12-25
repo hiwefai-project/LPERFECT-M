@@ -1,7 +1,6 @@
 {
   "domain": {
     "mode": "netcdf",
-    "domain_nc": "domain.nc",
     "varmap": {
       "dem": "dem",
       "d8": "d8",
@@ -11,6 +10,41 @@
       "y": "latitude"
     }
   },
+  "domains": [
+    {
+      "name": "national_90m",
+      "domain_nc": "domain_90m.nc",
+      "output": { "out_netcdf": "flood_depth_90m.nc" },
+      "restart": { "out": "restart_90m.nc" },
+      "rain": {
+        "sources": {
+          "rain": { "path": "rain_d01.nc" }
+        }
+      }
+    },
+    {
+      "name": "regional_30m",
+      "domain_nc": "domain_30m.nc",
+      "output": { "out_netcdf": "flood_depth_30m.nc" },
+      "restart": { "out": "restart_30m.nc" },
+      "rain": {
+        "sources": {
+          "rain": { "path": "rain_d02.nc" }
+        }
+      }
+    },
+    {
+      "name": "city_10m",
+      "domain_nc": "domain_10m.nc",
+      "output": { "out_netcdf": "flood_depth_10m.nc" },
+      "restart": { "out": "restart_10m.nc" },
+      "rain": {
+        "sources": {
+          "rain": { "path": "rain_d03.nc" }
+        }
+      }
+    }
+  ],
   "model": {
     "start_time": "2025-12-21T00:00:00Z",
     "T_s": 7200,

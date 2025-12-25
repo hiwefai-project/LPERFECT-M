@@ -4,8 +4,10 @@
 # NOTE: Rain NetCDF inputs follow cdl/rain_time_dependent.cdl (CF-1.10).
 
 # Import typing primitives.
-from typing import Any, Dict  # import typing import Any, Dict
+from typing import Any, Dict, Iterable, List, Optional  # import typing import Any, Dict, Iterable, List, Optional
 from collections import Counter, defaultdict  # import collections import Counter, defaultdict
+# Import dataclasses.
+from dataclasses import dataclass  # import dataclasses import dataclass
 
 # Import logging.
 import logging  # import logging
@@ -50,7 +52,517 @@ from .domain import Domain  # import .domain import Domain
 logger = logging.getLogger("lperfect")  # set logger
 
 
-def run_simulation(comm: Any, rank: int, size: int, cfg: Dict[str, Any], dom: Domain) -> None:  # define function run_simulation
+def _compute_travel_times_for_domain(
+    dom: Domain,
+    encoding: str,
+    travel_time_mode: str,
+    travel_time_s_cfg: float,
+    travel_time_channel_s_cfg: float,
+    travel_time_auto_cfg: Dict[str, Any],
+) -> tuple[float | np.ndarray, float | np.ndarray]:
+    """Return (hillslope_tt, channel_tt) for a domain."""
+
+    valid, ds_r, ds_c = build_downstream_index(dom.d8, encoding)
+
+    def _compute_hop_distances(cell_area_m2: float | np.ndarray) -> np.ndarray:
+        nrows_loc, ncols_loc = valid.shape
+        rr, cc = np.indices((nrows_loc, ncols_loc))
+        dr = ds_r - rr
+        dc = ds_c - cc
+        diag = (np.abs(dr) == 1) & (np.abs(dc) == 1) & valid
+        orth = valid & ~diag
+
+        if np.isscalar(cell_area_m2):
+            base = float(np.sqrt(cell_area_m2))
+            dist = np.zeros_like(valid, dtype=np.float64)
+            dist[orth] = base
+            dist[diag] = base * np.sqrt(2.0)
+            return dist
+
+        base = np.sqrt(cell_area_m2.astype(np.float64))
+        dist = np.zeros_like(base, dtype=np.float64)
+        dist[orth] = base[orth]
+        dist[diag] = base[diag] * np.sqrt(2.0)
+        return dist
+
+    if travel_time_mode == "auto":
+        vel_hill = float(travel_time_auto_cfg.get("hillslope_velocity_ms", 0.5))
+        vel_ch = float(travel_time_auto_cfg.get("channel_velocity_ms", 1.5))
+        min_s = float(travel_time_auto_cfg.get("min_s", 0.25))
+        max_s = float(travel_time_auto_cfg.get("max_s", 3600.0))
+        if vel_hill <= 0.0 or vel_ch <= 0.0:
+            raise ValueError("travel_time_auto velocities must be positive.")
+        dist = _compute_hop_distances(dom.cell_area_m2)
+        hill = np.clip(dist / vel_hill, min_s, max_s)
+        ch = np.clip(dist / vel_ch, min_s, max_s)
+        return hill, ch
+    if travel_time_mode == "fixed":
+        return travel_time_s_cfg, travel_time_channel_s_cfg
+    raise ValueError(f"Unknown travel_time_mode '{travel_time_mode}'. Use 'fixed' or 'auto'.")
+
+
+def _map_particles_to_domain(src_dom: Domain, dst_dom: Domain, particles: Particles) -> Particles:
+    """Project particles from src domain coords to dst grid via nearest neighbor."""
+    if particles.r.size == 0:
+        return particles
+    x_src = np.asarray(src_dom.x_vals, dtype=np.float64)
+    y_src = np.asarray(src_dom.y_vals, dtype=np.float64)
+    x_dst = np.asarray(dst_dom.x_vals, dtype=np.float64)
+    y_dst = np.asarray(dst_dom.y_vals, dtype=np.float64)
+
+    x_min, x_max = float(np.min(x_dst)), float(np.max(x_dst))
+    y_min, y_max = float(np.min(y_dst)), float(np.max(y_dst))
+
+    rr = particles.r.astype(np.int64)
+    cc = particles.c.astype(np.int64)
+    xs = x_src[np.clip(cc, 0, x_src.size - 1)]
+    ys = y_src[np.clip(rr, 0, y_src.size - 1)]
+
+    in_bounds = (xs >= x_min) & (xs <= x_max) & (ys >= y_min) & (ys <= y_max)
+    if not np.any(in_bounds):
+        return empty_particles()
+
+    xs = xs[in_bounds]
+    ys = ys[in_bounds]
+    vols = particles.vol[in_bounds]
+    # Nearest-neighbor search.
+    c_idx = np.argmin(np.abs(x_dst[None, :] - xs[:, None]), axis=1).astype(np.int32)
+    r_idx = np.argmin(np.abs(y_dst[None, :] - ys[:, None]), axis=1).astype(np.int32)
+    return Particles(r=r_idx, c=c_idx, vol=vols.astype(np.float64), tau=np.zeros_like(vols, dtype=np.float64))
+
+
+def run_nested_simulations(
+    comm: Any,
+    rank: int,
+    size: int,
+    base_cfg: Dict[str, Any],
+    contexts_in: list[tuple[str, Dict[str, Any], Domain]],
+    shared_cfg: Optional[SharedMemoryConfig],
+) -> None:
+    """Run multiple domains with two-way nesting and particle exchange."""
+
+    mcfg = base_cfg["model"]
+    T_s = float(mcfg["T_s"])
+    dt_s = float(mcfg["dt_s"])
+    encoding = str(mcfg["encoding"])
+    ia_ratio = float(mcfg["ia_ratio"])
+    particle_vol_m3 = float(mcfg["particle_vol_m3"])
+    travel_time_mode = str(mcfg.get("travel_time_mode", "fixed")).lower().strip()
+    travel_time_s_cfg = float(mcfg["travel_time_s"])
+    travel_time_channel_s_cfg = float(mcfg["travel_time_channel_s"])
+    travel_time_auto_cfg = mcfg.get("travel_time_auto", {})
+    outflow_sink = bool(mcfg["outflow_sink"])
+    log_every = int(mcfg.get("log_every", 10))
+
+    start_time = parse_iso8601_to_datetime64(mcfg.get("start_time", None))
+    start_datetime = parse_iso8601_to_utc_datetime(mcfg.get("start_time", None))
+
+    def _build_context(label: str, cfg: Dict[str, Any], dom: Domain) -> DomainContext:
+        valid, ds_r, ds_c = build_downstream_index(dom.d8, encoding)
+        tt_hill, tt_ch = _compute_travel_times_for_domain(dom, encoding, travel_time_mode, travel_time_s_cfg, travel_time_channel_s_cfg, travel_time_auto_cfg)
+
+        # Rain sources per domain (config may override).
+        rain_sources = build_rain_sources(cfg)
+        nrows, ncols = dom.dem.shape
+        r0, r1 = slab_bounds(nrows, size, rank)
+        P_slab = np.zeros((r1 - r0, ncols), dtype=np.float64)
+        Q_slab = np.zeros((r1 - r0, ncols), dtype=np.float64)
+        out_cfg = cfg.get("output", {})
+        save_every_s = float(out_cfg.get("save_every_s", 0.0) or 0.0)
+        rotate_every_s = float(out_cfg.get("rotate_every_s", 0.0) or 0.0)
+        rotate_enabled = rotate_every_s > 0.0
+        output_interval_s = rotate_every_s if rotate_enabled else save_every_s
+        rotation_index = 0
+        next_output_s: float | None = output_interval_s if output_interval_s > 0.0 else None
+        return DomainContext(
+            label=label,
+            cfg=cfg,
+            dom=dom,
+            valid=valid,
+            ds_r=ds_r,
+            ds_c=ds_c,
+            travel_time_s=tt_hill,
+            travel_time_channel_s=tt_ch,
+            rain_sources=rain_sources,
+            r0=r0,
+            r1=r1,
+            P_slab=P_slab,
+            Q_slab=Q_slab,
+            particles=empty_particles(),
+            cum_rain=0.0,
+            cum_runoff=0.0,
+            cum_outflow=0.0,
+            elapsed_s=0.0,
+            mass_error_series=[],
+            total_hops=0,
+            total_spawned=0,
+            total_outflow_particles=0,
+            rotation_index=rotation_index,
+            next_output_s=next_output_s,
+            output_file_initialized=False,
+        )
+
+    contexts: list[DomainContext] = [_build_context(label, cfg, dom) for label, cfg, dom in contexts_in]
+
+    if rank == 0:
+        logger.info("Nested domains: %s", ", ".join(ctx.label for ctx in contexts))
+
+    def _output_time_hours(elapsed_s: float) -> float:
+        return datetime_to_hours_since_1900(start_datetime + timedelta(seconds=float(elapsed_s)))
+
+    def _rotated_out_path(path: str, idx: int) -> str:
+        base = Path(str(path))
+        suffix = base.suffix or ".nc"
+        return str(base.with_name(f"{base.stem}_{idx:04d}{suffix}"))
+
+    def _prepare_output_target(ctx: DomainContext) -> tuple[str, str]:
+        out_cfg = ctx.cfg.get("output", {})
+        out_nc = out_cfg.get("out_netcdf", None)
+        if not out_nc:
+            raise ValueError("Output NetCDF path not set.")
+        rotate_every_s = float(out_cfg.get("rotate_every_s", 0.0) or 0.0)
+        rotate_enabled = rotate_every_s > 0.0
+        if rotate_enabled:
+            path = _rotated_out_path(out_nc, ctx.rotation_index)
+            ctx.rotation_index += 1
+            if rank == 0 and os.path.exists(path):
+                os.remove(path)
+            return path, "w"
+        if not ctx.output_file_initialized:
+            if rank == 0 and os.path.exists(out_nc):
+                os.remove(out_nc)
+            ctx.output_file_initialized = True
+            return str(out_nc), "w"
+        return str(out_nc), "a"
+
+    def _gather_and_write(ctx: DomainContext, elapsed_s: float, mode: str) -> None:
+        out_cfg = ctx.cfg.get("output", {})
+        out_nc = out_cfg.get("out_netcdf", None)
+        if not out_nc:
+            return
+        nrows, ncols = ctx.dom.dem.shape
+        volgrid = local_volgrid_from_particles_slab(
+            ctx.particles,
+            r0=ctx.r0,
+            r1=ctx.r1,
+            ncols=ncols,
+            shared_cfg=shared_cfg,
+        )
+        if size > 1:
+            vol_full = gather_field_slab_to_rank0(comm, volgrid, nrows, ncols)
+            Q_full = gather_field_slab_to_rank0(comm, ctx.Q_slab, nrows, ncols)
+        else:
+            vol_full = volgrid
+            Q_full = ctx.Q_slab
+        if rank != 0:
+            return
+        if np.isscalar(ctx.dom.cell_area_m2):
+            flood_depth = vol_full / float(ctx.dom.cell_area_m2)
+        else:
+            flood_depth = np.divide(vol_full, ctx.dom.cell_area_m2, out=np.zeros_like(vol_full), where=(ctx.dom.cell_area_m2 > 0))
+        flood_depth = np.where(ctx.dom.active_mask, flood_depth, np.nan)
+        if ctx.risk_accum is None:
+            ctx.risk_accum = compute_flow_accum_area_m2(ctx.dom.d8, encoding, ctx.dom.cell_area_m2, ctx.dom.active_mask)
+        risk_field = compute_risk_index(
+            runoff_cum_mm=Q_full,
+            flow_accum_m2=ctx.risk_accum,
+            active_mask=ctx.dom.active_mask,
+            balance=float(ctx.cfg.get("risk", {}).get("balance", 0.55)),
+            p_low=float(ctx.cfg.get("risk", {}).get("p_low", 5.0)),
+            p_high=float(ctx.cfg.get("risk", {}).get("p_high", 95.0)),
+        )
+        path, write_mode = _prepare_output_target(ctx)
+        write_results_netcdf_rank0(
+            path,
+            ctx.cfg,
+            ctx.dom,
+            flood_depth,
+            risk_field,
+            time_hours=_output_time_hours(elapsed_s),
+            mode=write_mode if mode == "append" else mode,
+        )
+
+    steps = int(np.ceil(T_s / dt_s))
+
+    for k in range(steps):
+        step_time_s = min((k + 1) * dt_s, T_s)
+        sim_time = (start_time + np.timedelta64(int(round(step_time_s)), "s")) if start_time is not None else None
+        outflow_for_exchange: dict[str, Particles] = {}
+        outflow_volumes: dict[str, float] = {}
+        transferred_counts: dict[str, float] = {}
+
+        for ctx in contexts:
+            nrows, ncols = ctx.dom.dem.shape
+
+            if rank == 0:
+                rain_step_mm = blended_rain_step_mm_rank0(
+                    sources=ctx.rain_sources,
+                    shape=(nrows, ncols),
+                    dt_s=dt_s,
+                    step_idx=k,
+                    sim_time=sim_time,
+                )
+                rain_step_mm = np.where(ctx.dom.active_mask, rain_step_mm, 0.0).astype(np.float32)
+            else:
+                rain_step_mm = np.empty((nrows, ncols), dtype=np.float32)
+            if size > 1:
+                comm.Bcast(rain_step_mm, root=0)
+            rain_slab_mm = rain_step_mm[ctx.r0:ctx.r1, :].astype(np.float64)
+
+            if np.isscalar(ctx.dom.cell_area_m2):
+                rain_vol_step_local = float((rain_slab_mm / 1000.0).sum() * float(ctx.dom.cell_area_m2))
+            else:
+                rain_vol_step_local = float(((rain_slab_mm / 1000.0) * ctx.dom.cell_area_m2[ctx.r0:ctx.r1, :]).sum())
+            ctx.P_slab = ctx.P_slab + rain_slab_mm
+            CN_slab = ctx.dom.cn[ctx.r0:ctx.r1, :]
+            Q_cum_slab = scs_cn_cumulative_runoff_mm(ctx.P_slab, CN_slab, ia_ratio=ia_ratio, device=normalize_device(ctx.cfg.get("compute", {}).get("device", "cpu")))
+            dQ_mm = np.maximum(Q_cum_slab - ctx.Q_slab, 0.0)
+            ctx.Q_slab = Q_cum_slab
+            runoff_depth_m = dQ_mm / 1000.0
+            newp, spawned_vol_local = spawn_particles_from_runoff_slab(
+                runoff_depth_m_slab=runoff_depth_m,
+                r0=ctx.r0,
+                cell_area_m2=ctx.dom.cell_area_m2,
+                particle_vol_m3=particle_vol_m3,
+                active_mask_global=ctx.dom.active_mask,
+            )
+            ctx.particles = concat_particles(ctx.particles, newp)
+            new_particles_local = int(newp.r.size)
+
+            ctx.particles, outflow_vol_local, nhops_local, outflow_points_local, outflow_particles_local = advect_particles_one_step(
+                particles=ctx.particles,
+                valid=ctx.valid,
+                ds_r=ctx.ds_r,
+                ds_c=ctx.ds_c,
+                dt_s=dt_s,
+                travel_time_s=ctx.travel_time_s,
+                travel_time_channel_s=ctx.travel_time_channel_s,
+                channel_mask=ctx.dom.channel_mask,
+                outflow_sink=outflow_sink,
+                shared_cfg=shared_cfg,
+                track_outflow_points=False,
+                return_outflow_particles=True,
+            )
+
+            if size > 1:
+                ctx.particles = migrate_particles_slab(comm, ctx.particles, nrows=nrows)
+
+            if size > 1:
+                rain_vol_step = comm.allreduce(rain_vol_step_local, op=MPI.SUM)
+                runoff_vol_step = comm.allreduce(spawned_vol_local, op=MPI.SUM)
+                outflow_vol_step = comm.allreduce(outflow_vol_local, op=MPI.SUM)
+                system_vol = comm.allreduce(float(ctx.particles.vol.sum()), op=MPI.SUM)
+                nhops = comm.allreduce(nhops_local, op=MPI.SUM)
+                new_particles = comm.allreduce(new_particles_local, op=MPI.SUM)
+            else:
+                rain_vol_step = rain_vol_step_local
+                runoff_vol_step = spawned_vol_local
+                outflow_vol_step = outflow_vol_local
+                system_vol = float(ctx.particles.vol.sum())
+                nhops = nhops_local
+                new_particles = new_particles_local
+
+            ctx.cum_rain += rain_vol_step
+            ctx.cum_runoff += runoff_vol_step
+            ctx.total_spawned += int(new_particles)
+            ctx.total_hops += int(nhops)
+
+            expected = ctx.cum_runoff - ctx.cum_outflow
+            mass_error = system_vol - expected
+            ctx.mass_error_series.append(float(mass_error))
+            ctx.elapsed_s = step_time_s
+
+            # Collect outflow particles on rank0 for exchange.
+            if size > 1:
+                outflow_global = gather_particles_to_rank0(comm, outflow_particles_local)
+            else:
+                outflow_global = outflow_particles_local
+            if rank == 0:
+                outflow_for_exchange[ctx.label] = outflow_global
+                outflow_volumes[ctx.label] = outflow_vol_step
+                transferred_counts[ctx.label] = float(outflow_global.vol.sum())
+
+        # Exchange phase (rank0 decides transfers).
+        transfer_map: dict[str, Particles] = {}
+        sink_volumes: dict[str, float] = {}
+        if rank == 0:
+            for src_label, particles_out in outflow_for_exchange.items():
+                sink_vol = outflow_volumes.get(src_label, 0.0)
+                for dst_ctx in contexts:
+                    if dst_ctx.label == src_label:
+                        continue
+                    mapped = _map_particles_to_domain(
+                        next(c.dom for c in contexts if c.label == src_label),
+                        dst_ctx.dom,
+                        particles_out,
+                    )
+                    if mapped.r.size:
+                        key = dst_ctx.label
+                        transfer_map[key] = concat_particles(transfer_map.get(key, empty_particles()), mapped)
+                        sink_vol -= float(mapped.vol.sum())
+                sink_volumes[src_label] = sink_vol
+        # Broadcast sink volumes and scatter transferred particles.
+        transfer_map = comm.bcast(transfer_map if rank == 0 else {}, root=0)
+        sink_volumes = comm.bcast(sink_volumes if rank == 0 else None, root=0)
+        for ctx in contexts:
+            ctx.cum_outflow += float(sink_volumes.get(ctx.label, 0.0))
+            if ctx.label in transfer_map:
+                incoming_global = transfer_map[ctx.label]
+            else:
+                incoming_global = empty_particles()
+            if size > 1:
+                incoming_local = scatter_particles_from_rank0(comm, incoming_global, nrows=ctx.dom.dem.shape[0])
+            else:
+                incoming_local = incoming_global
+            if incoming_local.r.size:
+                ctx.particles = concat_particles(ctx.particles, incoming_local)
+
+            # Periodic outputs.
+            out_cfg = ctx.cfg.get("output", {})
+            save_every_s = float(out_cfg.get("save_every_s", 0.0) or 0.0)
+            rotate_every_s = float(out_cfg.get("rotate_every_s", 0.0) or 0.0)
+            output_interval_s = rotate_every_s if rotate_every_s > 0.0 else save_every_s
+            if output_interval_s > 0.0 and ctx.next_output_s is not None:
+                while step_time_s + 1e-9 >= ctx.next_output_s:
+                    _gather_and_write(ctx, step_time_s, mode="a")
+                    ctx.output_written_any = True
+                    ctx.output_written_on_final = True if abs(step_time_s - T_s) < 1e-9 else ctx.output_written_on_final
+                    ctx.next_output_s += output_interval_s
+
+        if rank == 0 and log_every > 0 and ((k + 1) % log_every == 0 or (k + 1) == steps):
+            for ctx in contexts:
+                logger.info(
+                    "[%s] step=%d time_s=%.1f rain_m3=%.3e runoff_m3=%.3e outflow_m3=%.3e spawned=%d",
+                    ctx.label,
+                    (k + 1),
+                    step_time_s,
+                    ctx.cum_rain,
+                    ctx.cum_runoff,
+                    ctx.cum_outflow,
+                    ctx.total_spawned,
+                )
+
+    # Final outputs and quality reports per domain.
+    for ctx in contexts:
+        final_elapsed_s = T_s
+        # Outputs.
+        out_cfg = ctx.cfg.get("output", {})
+        out_nc = out_cfg.get("out_netcdf", None)
+        if out_nc:
+            if not ctx.output_written_any:
+                _gather_and_write(ctx, final_elapsed_s, mode="w")
+            elif not ctx.output_written_on_final:
+                _gather_and_write(ctx, final_elapsed_s, mode="a")
+        # Quality log.
+        final_system_vol_local = float(ctx.particles.vol.sum())
+        if size > 1:
+            final_system_vol = float(comm.allreduce(final_system_vol_local, op=MPI.SUM))
+        else:
+            final_system_vol = final_system_vol_local
+        if not ctx.mass_error_series:
+            expected = ctx.cum_runoff - ctx.cum_outflow
+            ctx.mass_error_series.append(float(final_system_vol - expected))
+        if rank == 0:
+            report = {
+                "label": ctx.label,
+                "rain_m3": ctx.cum_rain,
+                "runoff_m3": ctx.cum_runoff,
+                "outflow_m3": ctx.cum_outflow,
+                "stored_m3": final_system_vol,
+                "mass_error_m3": ctx.mass_error_series[-1],
+                "mass_error_pct_of_runoff": float(ctx.mass_error_series[-1] / ctx.cum_runoff * 100.0) if ctx.cum_runoff > 0 else np.nan,
+            }
+            logger.info(
+                "[%s] quality: rain=%.3e runoff=%.3e outflow=%.3e stored=%.3e mass_err=%.3e (%.3f%% of runoff)",
+                ctx.label,
+                report["rain_m3"],
+                report["runoff_m3"],
+                report["outflow_m3"],
+                report["stored_m3"],
+                report["mass_error_m3"],
+                report["mass_error_pct_of_runoff"],
+            )
+
+        # Restart write (final snapshot) per domain.
+        rst_cfg = ctx.cfg.get("restart", {})
+        rst_out = rst_cfg.get("out", None)
+        if rst_out:
+            if size > 1:
+                P_full = gather_field_slab_to_rank0(comm, ctx.P_slab, ctx.dom.dem.shape[0], ctx.dom.dem.shape[1])
+                Q_full = gather_field_slab_to_rank0(comm, ctx.Q_slab, ctx.dom.dem.shape[0], ctx.dom.dem.shape[1])
+                particles_all = gather_particles_to_rank0(comm, ctx.particles)
+            else:
+                P_full = ctx.P_slab
+                Q_full = ctx.Q_slab
+                particles_all = ctx.particles
+            if rank == 0:
+                save_restart_netcdf_rank0(
+                    out_path=str(rst_out),
+                    cfg=ctx.cfg,
+                    dom=ctx.dom,
+                    elapsed_s=float(final_elapsed_s),
+                    cum_rain_vol_m3=float(ctx.cum_rain),
+                    cum_runoff_vol_m3=float(ctx.cum_runoff),
+                    cum_outflow_vol_m3=float(ctx.cum_outflow),
+                    P_cum_mm_full=P_full,
+                    Q_cum_mm_full=Q_full,
+                    particles_all=particles_all,
+                )
+
+
+class NestedExchange:
+    """Lightweight structure to hold particle transfers between domains."""
+
+    def __init__(self) -> None:
+        self.to_domain: dict[str, Particles] = {}
+        self.sink_volume: float = 0.0
+
+    def add(self, target: str, particles: Particles) -> None:
+        if particles.r.size == 0:
+            return
+        if target not in self.to_domain:
+            self.to_domain[target] = particles
+        else:
+            self.to_domain[target] = concat_particles(self.to_domain[target], particles)
+
+
+@dataclass
+class DomainContext:
+    """Runtime state for one domain in a nested simulation."""
+
+    label: str
+    cfg: Dict[str, Any]
+    dom: Domain
+    valid: np.ndarray
+    ds_r: np.ndarray
+    ds_c: np.ndarray
+    travel_time_s: float | np.ndarray
+    travel_time_channel_s: float | np.ndarray
+    rain_sources: List[Any]
+    r0: int
+    r1: int
+    P_slab: np.ndarray
+    Q_slab: np.ndarray
+    particles: Particles
+    cum_rain: float
+    cum_runoff: float
+    cum_outflow: float
+    elapsed_s: float
+    mass_error_series: list[float]
+    total_hops: int
+    total_spawned: int
+    total_outflow_particles: int
+    risk_accum: Optional[np.ndarray] = None
+    output_written_any: bool = False
+    output_written_on_final: bool = False
+    rotation_index: int = 0
+    next_output_s: float | None = None
+    output_file_initialized: bool = False
+
+
+def run_simulation(
+    comm: Any, rank: int, size: int, cfg: Dict[str, Any], dom: Domain, domain_label: str | None = None
+) -> None:  # define function run_simulation
     """Run the full LPERFECT simulation (serial or MPI)."""  # execute statement
 
     # ------------------------------
@@ -579,7 +1091,7 @@ def run_simulation(comm: Any, rank: int, size: int, cfg: Dict[str, Any], dom: Do
         total_spawned_particles += new_particles
 
         # Advect particles.
-        particles, outflow_vol_local, nhops_local, outflow_points_local = advect_particles_one_step(  # set particles, outflow_vol_local, nhops_local, outflow_points_local
+        particles, outflow_vol_local, nhops_local, outflow_points_local, outflow_particles_local = advect_particles_one_step(  # set particles, outflow_vol_local, nhops_local, outflow_points_local, outflow_particles_local
             particles=particles,  # set particles
             valid=valid,  # set valid
             ds_r=ds_r,  # set ds_r
@@ -591,6 +1103,7 @@ def run_simulation(comm: Any, rank: int, size: int, cfg: Dict[str, Any], dom: Do
             outflow_sink=outflow_sink,  # set outflow_sink
             shared_cfg=shared_cfg,  # set shared_cfg
             track_outflow_points=record_outflow_points,  # set track_outflow_points
+            return_outflow_particles=True,  # set return_outflow_particles
         )  # execute statement
 
         # Migrate particles between slabs (MPI).

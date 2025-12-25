@@ -16,8 +16,7 @@ Project website: https://www.hiwefai-project.org
 - A ready-to-go recipe to make the LPERFECT model up and running [`link`](docs/getting_started.md)
 - Detailed information about how to configure the LPERFECT model [`link`](docs/configure.md)
 - Description in depth how the model works [`link`](docs/model_description.md)
-- Running nested domains (e.g., 90 m national + 30 m regional + 10 m city) via multi-domain configs is supported while keeping the same heterogeneous parallelization schema and enabling two-way particle exchanges between overlapping grids.
-  - Ensure `run_nested_simulations` is available by importing from `lperfect` (package exports `run_simulation` and `run_nested_simulations`).
+- Running nested domains (e.g., 90 m national + 30 m regional + 10 m city) via multi-domain configs is supported while keeping the same heterogeneous parallelization schema.
 - Some remarks about the LPERFECT parallelization schema for MPI and GPU [`link`](docs/parallelization_schema.md)
 - Detailed guide to preparing **domain** and **rainfall forcing** NetCDF inputs (with GDAL/CDO/NCO examples and Italy-oriented datasets) [link](docs/data.md)
 - Step-by-step real-world walkthrough: **Italy, December 23rd 2025 intense rain event** [`link`](docs/use_case_01.md)

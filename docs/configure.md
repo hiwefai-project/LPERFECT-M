@@ -135,7 +135,7 @@ You can shorten this file by including only the fields you want to override.
 Controls where the spatial domain is loaded from and how variables are mapped. You can:
 
 1. Provide a single `domain` object (backwards compatible).
-2. Provide a `domains` array to run multiple nested grids in sequence (e.g., national 90 m, regional 30 m, city 10 m). Each domain keeps the same hierarchical / heterogeneous parallelization scheme already used by LPERFECT; the model is executed once per domain with the same numerical and hydrological settings, with **two-way particle nesting** between overlapping domains (coarse ↔ fine).
+2. Provide a `domains` array to run multiple nested grids in sequence (e.g., national 90 m, regional 30 m, city 10 m). Each domain keeps the same hierarchical / heterogeneous parallelization scheme already used by LPERFECT; the model is executed once per domain with the same numerical and hydrological settings.
 
 Common keys for each domain object:
 
@@ -153,7 +153,6 @@ Common keys for each domain object:
 | `output.out_netcdf` | inherited | Output NetCDF path for this domain; if omitted in multi-domain runs it is auto-suffixed by the domain name. | `"out_netcdf": "flood_depth_30m.nc"` |
 | `restart.out` | inherited | Restart file to write for this domain; auto-suffixed when running multiple domains unless explicitly set. | `"out": "restart_10m.nc"` |
 | `restart.in` | inherited | Restart file to read for this domain; auto-suffixed when running multiple domains unless explicitly set. | `"in": "restart_10m.nc"` |
-| `rain.*` | inherited | Rain configuration overrides per domain (e.g., domain-specific NetCDF path). | `"rain": {"sources": {"rain": {"path": "rain_d02.nc"}}}` |
 
 > Note: The provided CDL templates use `latitude`/`longitude` coordinate names. If you
 > follow those templates, set `varmap.x = "longitude"` and
@@ -186,32 +185,23 @@ Common keys for each domain object:
       "name": "national_90m",
       "domain_nc": "domain_90m.nc",
       "output": { "out_netcdf": "flood_depth_90m.nc" },
-      "restart": { "out": "restart_90m.nc" },
-      "rain": { "sources": { "rain": { "path": "rain_d01.nc" } } }
+      "restart": { "out": "restart_90m.nc" }
     },
     {
       "name": "regional_30m",
       "domain_nc": "domain_30m.nc",
       "output": { "out_netcdf": "flood_depth_30m.nc" },
-      "restart": { "out": "restart_30m.nc" },
-      "rain": { "sources": { "rain": { "path": "rain_d02.nc" } } }
+      "restart": { "out": "restart_30m.nc" }
     },
     {
       "name": "city_10m",
       "domain_nc": "domain_10m.nc",
       "output": { "out_netcdf": "flood_depth_10m.nc" },
-      "restart": { "out": "restart_10m.nc" },
-      "rain": { "sources": { "rain": { "path": "rain_d03.nc" } } }
+      "restart": { "out": "restart_10m.nc" }
     }
   ]
 }
 ```
-
-**Nesting behavior**
-
-- Coarse-to-fine: particles exiting a coarse grid into a finer overlapping grid are injected into the fine grid at the nearest cell (tau reset to zero).
-- Fine-to-coarse: particles exiting the fine grid flow back into the parent grid at the nearest coarse cell, conserving volume.
-- Domains need only overlap; telescopic trees and multiple siblings (e.g., d02a/d02b) are supported without extra configuration.
 
 ---
 

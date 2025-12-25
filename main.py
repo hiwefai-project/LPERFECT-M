@@ -90,10 +90,9 @@ def _prepare_domain_run_config(
     run_cfg["domain"] = dom_cfg
     run_cfg.pop("domains", None)
 
-    # Allow per-domain overrides for output/restart/rain while keeping defaults.
+    # Allow per-domain overrides for output/restart while keeping defaults.
     run_cfg["output"] = deep_update(run_cfg.get("output", {}), dom_cfg.get("output", {}))
     run_cfg["restart"] = deep_update(run_cfg.get("restart", {}), dom_cfg.get("restart", {}))
-    run_cfg["rain"] = deep_update(run_cfg.get("rain", {}), dom_cfg.get("rain", {}))
 
     # Enforce distinct artifacts when running multiple domains.
     if ndomains > 1:
@@ -184,11 +183,6 @@ def main() -> None:
     if ndomains == 0:
         raise ValueError("At least one domain must be configured.")
 
-    compute_cfg = cfg.get("compute", {})
-    shared_cfg = SharedMemoryConfig.from_dict(compute_cfg.get("shared_memory", {}))
-
-    domain_contexts: list[tuple[str, Dict[str, Any], Any]] = []
-
     for idx, dom_cfg in enumerate(domains):
         domain_label = str(dom_cfg.get("name", f"domain_{idx + 1}"))
         label_slug = _slugify(domain_label)
@@ -211,16 +205,19 @@ def main() -> None:
             dom = read_domain_netcdf_rank0(run_cfg)
             logger.info("Domain '%s' loaded (serial): %s", domain_label, dom.dem.shape)
 
-        domain_contexts.append((domain_label, run_cfg, dom))
+        if rank == 0:
+            logger.info(
+                "Starting simulation for domain '%s' (%d/%d)",
+                domain_label,
+                idx + 1,
+                ndomains,
+            )
 
-    if ndomains > 1:
-        run_nested_simulations(comm, rank, size, cfg, domain_contexts, shared_cfg)
-    else:
-        single_label, single_cfg, single_dom = domain_contexts[0]
-        run_simulation(comm, rank, size, single_cfg, single_dom, domain_label=single_label)
+        # Run the main simulation driver with the loaded configuration and domain.
+        run_simulation(comm, rank, size, run_cfg, dom, domain_label=domain_label)
 
-    # Close cached NetCDF rain datasets to free resources between domains.
-    xr_close_cache()
+        # Close cached NetCDF rain datasets to free resources between domains.
+        xr_close_cache()
 
     # Emit a final log line on rank 0.
     if rank == 0:

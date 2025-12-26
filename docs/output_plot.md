@@ -77,6 +77,12 @@ python utils/output_plot.py \
 ```
 Order is `min_lon min_lat max_lon max_lat` (EPSG:4326).
 
+Common Campania-area boxes you can pass to `--bbox`:
+- **Regione Campania:** `13.7 39.9 15.9 41.6` (broad regional view)
+- **Naples Province (Metropolitan City):** `13.8 40.6 14.9 41.2` (includes islands)
+- **City of Naples:** `14.14 40.78 14.30 40.88` (urban core)
+- **Ischia Island:** `13.86 40.69 13.99 40.76` (island detail)
+
 ---
 
 ## Grid alignment (scientific correctness)

@@ -105,7 +105,7 @@ def advect_particles_one_step(  # define function advect_particles_one_step
 
         can_move = (particles.tau <= 0.0)  # set can_move
         if not np.any(can_move):  # check condition not np.any(can_move):
-            return particles, 0.0, 0, {}  # return particles, 0.0, 0, {}
+            return particles, 0.0, 0, {}, empty_particles()  # return particles, 0.0, 0, {}, empty_particles()
 
         idx = np.nonzero(can_move)[0]  # set idx
         r0 = particles.r[idx]  # set r0
@@ -173,7 +173,7 @@ def advect_particles_one_step(  # define function advect_particles_one_step
 
         can_move = tau_chunk <= 0.0
         if not np.any(can_move):
-            return r_chunk, c_chunk, vol_chunk, tau_chunk, 0.0, 0, {}
+            return r_chunk, c_chunk, vol_chunk, tau_chunk, 0.0, 0, {}, empty_particles()
 
         idx_local = np.nonzero(can_move)[0]
         r0 = r_chunk[idx_local]

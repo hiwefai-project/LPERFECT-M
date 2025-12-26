@@ -88,7 +88,7 @@ retaining the output/restart fields exposed in the sample file:
   ],
   "model": {
     "start_time": "2025-03-14T00:00:00Z",
-    "T_s": 86400,
+    "T_s": 21600,
     "dt_s": 5,
     "encoding": "esri",
     "ia_ratio": 0.2,
@@ -161,14 +161,37 @@ retaining the output/restart fields exposed in the sample file:
 }
 ```
 
-## 6. Run the model
-Execute the 24-hour simulation on CPU:
+## 6. Run the model with planned restarts (6-hour legs)
+The configuration above sets `model.T_s` to 21,600 seconds (6 hours) so each run finishes after one leg.
+Use `--restart-out` to capture the end-of-leg state and `--restart-in` to resume from it. Repeat until you
+complete the 24-hour window (four legs):
 ```bash
-python main.py --config config_use_case_02.json
+# Leg 1: 00:00–06:00 UTC
+python main.py --config config_use_case_02.json \
+  --out-nc data/20250314Z0000_flood_depth.nc \
+  --restart-out data/restart/20250314Z0000_t06h.nc
+
+# Leg 2: 06:00–12:00 UTC
+python main.py --config config_use_case_02.json \
+  --restart-in data/restart/20250314Z0000_t06h.nc \
+  --restart-out data/restart/20250314Z0000_t12h.nc \
+  --out-nc data/20250314Z0000_flood_depth.nc
+
+# Leg 3: 12:00–18:00 UTC
+python main.py --config config_use_case_02.json \
+  --restart-in data/restart/20250314Z0000_t12h.nc \
+  --restart-out data/restart/20250314Z0000_t18h.nc \
+  --out-nc data/20250314Z0000_flood_depth.nc
+
+# Leg 4: 18:00–24:00 UTC
+python main.py --config config_use_case_02.json \
+  --restart-in data/restart/20250314Z0000_t18h.nc \
+  --out-nc data/20250314Z0000_flood_depth.nc
 ```
-Outputs:
-- `data/20250314Z0000_flood_depth.nc` with `flood_depth(time, latitude, longitude)` and (if enabled) `risk_index`.
-- `data/20250314Z0000_restart_state.nc` containing the restart state saved every 120 steps.
+Outputs per leg:
+- `data/20250314Z0000_flood_depth.nc` (updated after each leg with `flood_depth` and, if enabled, `risk_index`).
+- `data/restart/20250314Z0000_tXXh.nc` snapshots written at the end of each 6-hour leg, plus the
+  intra-leg restart frequency defined by `restart.every`.
 
 ## 7. Visualize flood depth with the DEM as basemap
 Use the bundled plotting utility to overlay flood depth on a DEM hillshade. The example below renders the first time step to a PNG; omit `--out` to open an interactive window.
@@ -181,9 +204,50 @@ python utils/output_plot.py \
   --title "LPERFECT flood depth – 2025-03-14 00:00 UTC"
 ```
 
-## 8. Recap
+## 8. Submit a Slurm batch job (HPC)
+To run the 6-hour-leg workflow on an HPC cluster managed by Slurm, create `run_lperfect_use_case_02.slurm`:
+```bash
+#!/bin/bash
+#SBATCH --job-name=lperfect-italy-20250314
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --time=26:00:00
+#SBATCH --partition=normal
+#SBATCH --output=logs/lperfect_%j.out
+#SBATCH --error=logs/lperfect_%j.err
+
+module load python/3.11
+source /path/to/venv/bin/activate
+
+set -euo pipefail
+mkdir -p logs data/restart
+
+CONFIG=config_use_case_02.json
+OUT=data/20250314Z0000_flood_depth.nc
+
+declare -a LEGS=(06 12 18 24)
+RESTART_IN=""
+
+for LEG in "${LEGS[@]}"; do
+  if [[ -z "$RESTART_IN" ]]; then
+    python main.py --config "$CONFIG" \
+      --out-nc "$OUT" \
+      --restart-out "data/restart/20250314Z0000_t${LEG}h.nc"
+  else
+    python main.py --config "$CONFIG" \
+      --restart-in "$RESTART_IN" \
+      --restart-out "data/restart/20250314Z0000_t${LEG}h.nc" \
+      --out-nc "$OUT"
+  fi
+  RESTART_IN="data/restart/20250314Z0000_t${LEG}h.nc"
+done
+```
+Submit with `sbatch run_lperfect_use_case_02.slurm`. Adjust `#SBATCH` resources, module loads, and virtual environment paths to match your HPC environment.
+
+## 9. Recap
 1. Download `data/domain.nc`.
 2. Pull 00:00–23:50 UTC radar GeoTIFFs for 2025-03-14 from the Civil Protection Department Weather Radar mosaics.
 3. Convert them to `data/20250314Z0000_radar.nc` with `utils/wr_to_rainrate.py`.
-4. Run `python main.py --config config_use_case_02.json` for the 24-hour window.
+4. Run the 24-hour window as four 6-hour legs with planned restarts.
 5. Plot `flood_depth` over the DEM to inspect impacted areas.

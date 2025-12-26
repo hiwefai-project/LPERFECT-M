@@ -33,6 +33,7 @@ import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
 from matplotlib.colors import LightSource
+import matplotlib.patheffects as pe
 
 LOG = logging.getLogger("plot_flood_depth")
 
@@ -103,6 +104,40 @@ def _pick_var(ds: xr.Dataset, preferred: str, fallback: List[str]) -> xr.DataArr
             LOG.warning("Variable '%s' not found, using '%s' instead.", preferred, n)
             return ds[n]
     raise KeyError(f"Could not find '{preferred}' (or fallback) in dataset variables: {list(ds.variables)}")
+
+
+def _subset_bbox(ds: xr.Dataset, lat_name: str, lon_name: str, bbox: Tuple[float, float, float, float]) -> xr.Dataset:
+    """Subset dataset to a lon/lat bounding box; raise if empty."""
+    min_lon, min_lat, max_lon, max_lat = bbox
+    lat_vals = ds[lat_name].values
+    lon_vals = ds[lon_name].values
+    lat_slice = slice(min_lat, max_lat) if lat_vals[0] < lat_vals[-1] else slice(max_lat, min_lat)
+    lon_slice = slice(min_lon, max_lon) if lon_vals[0] < lon_vals[-1] else slice(max_lon, min_lon)
+    ds_sub = ds.sel({lat_name: lat_slice, lon_name: lon_slice})
+    if ds_sub[lat_name].size == 0 or ds_sub[lon_name].size == 0:
+        raise ValueError(f"BBox {bbox} returned an empty selection for dataset coords ({lat_name}, {lon_name}).")
+    return ds_sub
+
+
+def _pick_label_column(gdf, requested: Optional[str]) -> Optional[str]:
+    """Return a column name to use for labels (requested, common defaults, or first string-like)."""
+    if requested:
+        if requested in gdf.columns:
+            return requested
+        LOG.warning("Requested label column '%s' not found in overlay; falling back to auto-detection.", requested)
+
+    for cand in ("name", "Name", "NAME", "nome", "NOME", "NOME_COM", "COMUNE"):
+        if cand in gdf.columns:
+            return cand
+
+    for col in gdf.columns:
+        if col == gdf.geometry.name:
+            continue
+        if gdf[col].dtype == object:
+            return col
+        if np.issubdtype(gdf[col].dtype, np.number):
+            return col
+    return None
 
 
 # -----------------------------
@@ -178,6 +213,8 @@ def plot_one(
     overlay_vectors: Optional[str],
     vector_linewidth: float,
     vector_alpha: float,
+    overlay_label_field: Optional[str],
+    overlay_label_size: float,
     dpi: int,
 ) -> None:
     """Render one map: DEM hillshade + flood overlay."""
@@ -187,13 +224,18 @@ def plot_one(
     if threshold is not None:
         flood = flood.where(flood > threshold)
 
-    if log_scale:
-        flood = flood.where(flood > 0)
+    # Always hide non-positive flood depths (transparent).
+    flood = flood.where(flood > 0)
 
     flood_np = np.asarray(flood.values, dtype=float)
 
     if vmax is None and vmax_percentile is not None:
         vmax = _percentile_vmax(flood_np, vmax_percentile)
+
+    if vmax is None or not np.isfinite(vmax) or vmax <= 0:
+        fallback = max(vmin, 1e-6 if log_scale else 0.0)
+        vmax = fallback + (1e-3 if log_scale else 1e-3)
+        LOG.warning("Using fallback vmax=%s for plotting (data after masking may be empty).", vmax)
 
     ls = LightSource(azdeg=hillshade_azdeg, altdeg=hillshade_altdeg)
     # LightSource.shade expects a Colormap, not a string (matplotlib>=3.9 raises TypeError)
@@ -227,6 +269,28 @@ def plot_one(
         try:
             gdf = load_vectors(overlay_vectors)
             gdf.boundary.plot(ax=ax, linewidth=vector_linewidth, alpha=vector_alpha)
+
+            label_col = _pick_label_column(gdf, overlay_label_field)
+            if label_col:
+                for _, row in gdf.iterrows():
+                    geom = row.geometry
+                    label = row[label_col]
+                    if geom is None or geom.is_empty or label is None or (isinstance(label, (float, np.floating)) and np.isnan(label)):
+                        continue
+                    centroid = geom.centroid
+                    ax.text(
+                        centroid.x,
+                        centroid.y,
+                        str(label),
+                        ha="center",
+                        va="center",
+                        fontsize=overlay_label_size,
+                        color="black",
+                        alpha=vector_alpha,
+                        path_effects=[pe.withStroke(linewidth=1.5, foreground="white")],
+                    )
+            else:
+                LOG.info("Overlay provided but no suitable label column found; skipping labels.")
         except Exception as e:
             LOG.error("Vector overlay failed (%s). Continuing without vectors.", e)
 
@@ -278,9 +342,16 @@ def main() -> int:
     ap.add_argument("--altdeg", type=float, default=45.0, help="Hillshade altitude (deg).")
     ap.add_argument("--vert-exag", type=float, default=1.0, help="Hillshade vertical exaggeration.")
 
-    ap.add_argument("--overlay", default=None, help="GeoJSON/Shapefile path to overlay (optional).")
+    ap.add_argument("--overlay", "--overlay-vector", dest="overlay", default=None,
+                    help="GeoJSON/Shapefile path to overlay (optional).")
     ap.add_argument("--vector-linewidth", type=float, default=1.0)
     ap.add_argument("--vector-alpha", type=float, default=0.9)
+    ap.add_argument("--overlay-label-field", default=None,
+                    help="Column to use as label for overlay features (auto-detect if omitted).")
+    ap.add_argument("--overlay-label-size", type=float, default=8.0, help="Font size for overlay labels.")
+
+    ap.add_argument("--bbox", nargs=4, type=float, metavar=("MIN_LON", "MIN_LAT", "MAX_LON", "MAX_LAT"),
+                    help="Clip both DEM and flood data to a lon/lat bounding box.")
 
     ap.add_argument("--dpi", type=int, default=150, help="PNG DPI when saving.")
     ap.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
@@ -313,6 +384,12 @@ def main() -> int:
         flood_ds = flood_ds.sortby(flood_ds[flood_lat])
     if domain_ds[dem_lat].values[0] > domain_ds[dem_lat].values[-1]:
         domain_ds = domain_ds.sortby(domain_ds[dem_lat])
+
+    if args.bbox:
+        bbox = tuple(args.bbox)
+        LOG.info("Applying bounding box (min_lon, min_lat, max_lon, max_lat) = %s", bbox)
+        flood_ds = _subset_bbox(flood_ds, flood_lat, flood_lon, bbox)
+        domain_ds = _subset_bbox(domain_ds, dem_lat, dem_lon, bbox)
 
     flood_var = flood_ds[flood_var.name]
     dem_var = domain_ds[dem_var.name]
@@ -404,6 +481,8 @@ def main() -> int:
             overlay_vectors=args.overlay,
             vector_linewidth=args.vector_linewidth,
             vector_alpha=args.vector_alpha,
+            overlay_label_field=args.overlay_label_field,
+            overlay_label_size=args.overlay_label_size,
             dpi=args.dpi,
         )
 

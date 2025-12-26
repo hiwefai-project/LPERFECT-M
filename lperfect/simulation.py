@@ -269,10 +269,13 @@ def run_simulation(
         """Return (path, mode) for the next output write."""
         nonlocal output_file_initialized, rotation_index
         if rotate_enabled:
-            path = _rotated_out_path(rotation_index)
+            idx = rotation_index
+            path = _rotated_out_path(idx)
             rotation_index += 1
-            if rank == 0 and os.path.exists(path):
-                os.remove(path)
+            if rank == 0:
+                logger.info("Rotating output NetCDF to %s (index=%04d)", path, idx)
+                if os.path.exists(path):
+                    os.remove(path)
             return path, "w"
 
         if not out_nc:
@@ -332,15 +335,22 @@ def run_simulation(
         if not out_nc:
             return False
         out_path, mode = _prepare_output_target()
+        time_hours = _output_time_hours(elapsed_s)
         flood_depth, risk_field = _gather_outputs_for_rank0()
         if rank == 0 and flood_depth is not None and risk_field is not None:
+            logger.info(
+                "Adding output time slice at t=%.3fs (%.3f h) to %s",
+                float(elapsed_s),
+                float(time_hours),
+                out_path,
+            )
             write_results_netcdf_rank0(
                 out_path,
                 cfg,
                 dom,
                 flood_depth,
                 risk_field,
-                time_hours=_output_time_hours(elapsed_s),
+                time_hours=time_hours,
                 mode=mode,
             )
         return True

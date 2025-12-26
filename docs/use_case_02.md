@@ -71,7 +71,7 @@ retaining the output/restart fields exposed in the sample file:
       "domain_nc": "data/domain.nc",
       "output": {
         "out_netcdf": "data/20250314Z0000_flood_depth.nc",
-        "save_every_s": 3600,
+        "save_every_s": 0,
         "rotate_every_s": 3600,
         "outflow_geojson": null,
         "Conventions": "CF-1.10",
@@ -143,7 +143,7 @@ retaining the output/restart fields exposed in the sample file:
   },
   "output": {
     "out_netcdf": "data/20250314Z0000_flood_depth.nc",
-    "save_every_s": 3600,
+    "save_every_s": 0,
     "rotate_every_s": 3600,
     "outflow_geojson": null,
     "Conventions": "CF-1.10",

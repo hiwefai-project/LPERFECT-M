@@ -446,7 +446,7 @@ Controls final NetCDF output metadata and paths.
 | `output.inundation_threshold_m` | `0.01` | Depth (m) used to derive `inundation_mask` and `inundation_mask_max`. | `"inundation_threshold_m": 0.05` |
 | `output.fill_value` | `-9999.0` | `_FillValue` applied to float outputs (`flood_depth`, `risk_index`, `flood_depth_max`). | `"fill_value": -32767.0` |
 
-> Configure **either** `save_every_s` **or** `rotate_every_s` (not both). The final state is always written even if it does not land exactly on the requested cadence.
+> Configure **either** `save_every_s` **or** `rotate_every_s`. If both are set, rotation takes precedence and the model logs a warning. The final state is always written even if it does not land exactly on the requested cadence.
 > At the end of each run, a simulation quality report is logged automatically (no configuration needed), covering mass balance and hydrological checks.
 
 **Example:**

@@ -165,7 +165,14 @@ def run_simulation(
     if save_every_s < 0.0 or rotate_every_s < 0.0:  # check condition save_every_s < 0.0 or rotate_every_s < 0.0:
         raise ValueError("output.save_every_s and output.rotate_every_s must be non-negative.")  # raise ValueError("output.save_every_s and output.rotate_every_s must be non-negative.")
     if save_every_s > 0.0 and rotate_every_s > 0.0:  # check condition save_every_s > 0.0 and rotate_every_s > 0.0:
-        raise ValueError("Configure only one of output.save_every_s or output.rotate_every_s.")  # raise ValueError("Configure only one of output.save_every_s or output.rotate_every_s.")
+        if rank == 0:
+            logger.warning(
+                "Both output.save_every_s=%.0f and output.rotate_every_s=%.0f are set; "
+                "rotating outputs take precedence.",
+                save_every_s,
+                rotate_every_s,
+            )
+        save_every_s = 0.0
     rotate_enabled = rotate_every_s > 0.0  # set rotate_enabled
     output_interval_s = rotate_every_s if rotate_enabled else save_every_s  # set output_interval_s
     if output_interval_s > 0.0 and not out_nc:  # check condition output_interval_s > 0.0 and not out_nc:

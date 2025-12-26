@@ -46,12 +46,13 @@ python utils/wr_to_rainrate.py \
 - The script reads reflectivity (dBZ), converts it to rain rate (mm/h) with the default Z–R relationship (`Z = 200 * R^1.6`), reprojects/interpolates to the domain grid, and writes `rain_rate(time, latitude, longitude)` with CF metadata.
 
 ## 5. Create the simulation configuration
-Save the following as `config_use_case_01.json` (or update your config accordingly):
+Save the following as `config_use_case_01.json` (or update your config accordingly). It mirrors
+the structure of `config.json.sample`, using the `domains` array even for a single domain and
+retaining the output/restart fields exposed in the sample file:
 ```json
 {
   "domain": {
     "mode": "netcdf",
-    "domain_nc": "data/domain.nc",
     "varmap": {
       "dem": "dem",
       "d8": "d8",
@@ -61,6 +62,27 @@ Save the following as `config_use_case_01.json` (or update your config according
       "y": "latitude"
     }
   },
+  "domains": [
+    {
+      "name": "italy_20251223",
+      "domain_nc": "data/domain.nc",
+      "output": {
+        "out_netcdf": "data/20251223Z1200_flood_depth.nc",
+        "save_every_s": 0,
+        "rotate_every_s": 0,
+        "outflow_geojson": null,
+        "Conventions": "CF-1.10",
+        "title": "LPERFECT flood depth + hydrogeological risk index",
+        "institution": "UniParthenope"
+      },
+      "restart": {
+        "in": null,
+        "out": "data/20251223Z1200_restart_state.nc",
+        "every": 120,
+        "strict_grid_check": true
+      }
+    }
+  ],
   "model": {
     "start_time": "2025-12-23T12:00:00Z",
     "T_s": 21600,
@@ -118,6 +140,9 @@ Save the following as `config_use_case_01.json` (or update your config according
   },
   "output": {
     "out_netcdf": "data/20251223Z1200_flood_depth.nc",
+    "save_every_s": 0,
+    "rotate_every_s": 0,
+    "outflow_geojson": null,
     "Conventions": "CF-1.10",
     "title": "LPERFECT flood depth + hydrogeological risk index",
     "institution": "UniParthenope"

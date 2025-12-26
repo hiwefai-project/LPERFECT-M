@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple, Any, List
 
@@ -85,6 +86,30 @@ def _mask_fill_and_nan(da: xr.DataArray) -> xr.DataArray:
     if fill is not None:
         out = out.where(out != fill)
     return out
+
+
+def _format_time_value(value: Any) -> str:
+    """Return an ISO-8601-like representation for a time coordinate value."""
+    if isinstance(value, np.datetime64):
+        return np.datetime_as_string(value, unit="s")
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if hasattr(value, "isoformat"):
+        try:
+            return value.isoformat()
+        except Exception:
+            pass
+    try:
+        return np.datetime_as_string(np.datetime64(value), unit="s")
+    except Exception:
+        return str(value)
+
+
+def _log_dataset_metadata(ds: xr.Dataset, name: str) -> None:
+    """Log common metadata fields if present."""
+    for attr in ("title", "institution"):
+        if attr in ds.attrs and ds.attrs[attr]:
+            LOG.info("%s %s: %s", name, attr, ds.attrs[attr])
 
 
 def _percentile_vmax(data: np.ndarray, p: float) -> float:
@@ -363,6 +388,7 @@ def main() -> int:
 
     LOG.info("Opening flood dataset: %s", args.flood)
     flood_ds = xr.open_dataset(args.flood)
+    _log_dataset_metadata(flood_ds, "Flood dataset")
 
     LOG.info("Opening domain dataset: %s", args.domain)
     domain_ds = xr.open_dataset(args.domain)
@@ -411,9 +437,14 @@ def main() -> int:
 
     time_dim = "time" if "time" in flood_var.dims else None
 
+    time_coord_values = flood_ds[time_dim].values if time_dim else None
+
     def make_title(ti: int) -> str:
         if args.title:
             return args.title
+        if time_dim and time_coord_values is not None:
+            time_label = _format_time_value(time_coord_values[ti])
+            return f"LPERFECT flood depth – {time_label}"
         return f"LPERFECT flood depth – time index {ti}" if time_dim else "LPERFECT flood depth"
 
     time_size = int(flood_ds.sizes.get(time_dim, 1)) if time_dim else 1
@@ -434,6 +465,11 @@ def main() -> int:
             if ti < 0 or ti >= time_size:
                 raise ValueError(f"time index {ti} out of range.")
             flood_da = flood_var.isel({time_dim: ti})
+            time_value = time_coord_values[ti] if time_coord_values is not None else None
+            if time_value is not None:
+                LOG.info("Plotting time index %s (%s)", ti, _format_time_value(time_value))
+            else:
+                LOG.info("Plotting time index %s", ti)
         else:
             flood_da = flood_var
 

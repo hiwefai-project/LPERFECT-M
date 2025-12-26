@@ -255,6 +255,8 @@ def plot_one(
 
     fig, ax = plt.subplots(figsize=(10, 8))
     ax.imshow(shade, extent=extent, origin="lower")
+    ax.set_xlim(extent[0], extent[1])
+    ax.set_ylim(extent[2], extent[3])
 
     if log_scale:
         from matplotlib.colors import LogNorm

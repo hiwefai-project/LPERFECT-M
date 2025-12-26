@@ -196,7 +196,13 @@ def plot_one(
         vmax = _percentile_vmax(flood_np, vmax_percentile)
 
     ls = LightSource(azdeg=hillshade_azdeg, altdeg=hillshade_altdeg)
-    shade = ls.shade(np.asarray(dem.values, dtype=float), cmap="Greys", blend_mode="overlay", vert_exag=hillshade_vert_exag)
+    # LightSource.shade expects a Colormap, not a string (matplotlib>=3.9 raises TypeError)
+    shade = ls.shade(
+        np.asarray(dem.values, dtype=float),
+        cmap=plt.get_cmap("Greys"),
+        blend_mode="overlay",
+        vert_exag=hillshade_vert_exag,
+    )
 
     lon = np.asarray(dem[lon_name].values, dtype=float)
     lat = np.asarray(dem[lat_name].values, dtype=float)

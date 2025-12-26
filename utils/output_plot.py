@@ -415,6 +415,8 @@ def main() -> int:
             return args.title
         return f"LPERFECT flood depth – time index {ti}" if time_dim else "LPERFECT flood depth"
 
+    time_size = int(flood_ds.sizes.get(time_dim, 1)) if time_dim else 1
+
     if args.all_times:
         if not args.out_dir:
             raise ValueError("--all-times requires --out-dir.")
@@ -422,13 +424,13 @@ def main() -> int:
             indices = [0]
             LOG.warning("No 'time' dimension found; plotting one frame.")
         else:
-            indices = list(range(int(flood_ds.dims.get(time_dim, 1))))
+            indices = list(range(time_size))
     else:
         indices = [args.time_index]
 
     for ti in indices:
         if time_dim:
-            if ti < 0 or ti >= int(flood_ds.dims.get(time_dim, 1)):
+            if ti < 0 or ti >= time_size:
                 raise ValueError(f"time index {ti} out of range.")
             flood_da = flood_var.isel({time_dim: ti})
         else:

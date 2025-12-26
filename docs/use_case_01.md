@@ -71,8 +71,8 @@ retaining the output/restart fields exposed in the sample file:
       "domain_nc": "data/domain.nc",
       "output": {
         "out_netcdf": "data/20251223Z1200_flood_depth.nc",
-        "save_every_s": 0,
-        "rotate_every_s": 0,
+        "save_every_s": 3600,
+        "rotate_every_s": 3600,
         "outflow_geojson": null,
         "Conventions": "CF-1.10",
         "title": "LPERFECT flood depth + hydrogeological risk index",
@@ -131,7 +131,7 @@ retaining the output/restart fields exposed in the sample file:
   },
   "risk": {
     "enabled": true,
-    "balance": 0.55,
+    "balance": 0.15,
     "p_low": 5.0,
     "p_high": 95.0
   },
@@ -143,8 +143,8 @@ retaining the output/restart fields exposed in the sample file:
   },
   "output": {
     "out_netcdf": "data/20251223Z1200_flood_depth.nc",
-    "save_every_s": 0,
-    "rotate_every_s": 0,
+    "save_every_s": 3600,
+    "rotate_every_s": 3600,
     "outflow_geojson": null,
     "Conventions": "CF-1.10",
     "title": "LPERFECT flood depth + hydrogeological risk index",

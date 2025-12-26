@@ -151,7 +151,12 @@ retaining the output/restart fields exposed in the sample file:
     "institution": "UniParthenope"
   },
   "compute": {
-    "device": "cpu"
+    "device": "cpu",
+    "shared_memory": {
+      "enabled": true,
+      "workers": 8,
+      "min_particles_per_worker": 20000
+    }
   }
 }
 ```

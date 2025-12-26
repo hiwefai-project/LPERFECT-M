@@ -9,9 +9,10 @@ It includes the “do it all” improvements:
 - Threshold masking
 - Percentile-based `vmax` for better contrast
 - Optional log scaling
+- Dry pixels are transparent (any `flood_depth <= 0` is masked automatically)
 - Optional regridding (grid alignment)
 - Batch frame generation for all time steps
-- Optional GeoJSON/Shapefile overlay (if installed)
+- Optional GeoJSON/Shapefile overlay (if installed), with centroid labels
 - Pedagogical line-by-line comments in the code
 - CLI + logging for reproducible runs
 
@@ -66,6 +67,16 @@ python utils/output_plot.py \
   --out outputs/flood_log.png
 ```
 
+Clip to a bounding box (e.g., Regione Campania) to speed up rendering and focus the map:
+```bash
+python utils/output_plot.py \
+  --flood data/flood_depth.nc \
+  --domain data/domain.nc \
+  --bbox 13.7 39.9 15.9 41.6 \
+  --out outputs/flood_campania.png
+```
+Order is `min_lon min_lat max_lon max_lat` (EPSG:4326).
+
 ---
 
 ## Grid alignment (scientific correctness)
@@ -113,8 +124,12 @@ python utils/output_plot.py \
   --flood data/flood_depth.nc \
   --domain data/domain.nc \
   --overlay data/boundaries.geojson \
+  --overlay-label-field name \
   --out outputs/flood_with_bounds.png
 ```
+
+- If `--overlay-label-field` is omitted, the script tries common name columns (`name`, `nome`, etc.) or the first string-like column.
+- Labels are placed at feature centroids with a light outline for readability.
 
 ---
 
@@ -125,6 +140,8 @@ python utils/output_plot.py \
 - Variables: `--flood-var`, `--dem-var`, `--lat-name`, `--lon-name`
 - Alignment: `--regrid`
 - Styling: `--threshold`, `--vmin`, `--vmax`, `--vmax-percentile`, `--log-scale`, `--alpha`, `--cmap-flood`
+- Subset: `--bbox min_lon min_lat max_lon max_lat`
+- Overlays: `--overlay`, `--overlay-label-field`, `--overlay-label-size`, `--vector-alpha`, `--vector-linewidth`
 - Hillshade: `--azdeg`, `--altdeg`, `--vert-exag`
 - Output: `--out`, `--dpi`
 - Debug: `--log-level DEBUG`
@@ -135,4 +152,3 @@ python utils/output_plot.py \
 
 - The script assumes **rectilinear grids** (1D lat, 1D lon). If you have curvilinear 2D lon/lat, you’ll need a different plotting approach.
 - If you see misalignment, try `--regrid flood_to_dem` and check that both datasets use the same coordinate reference (usually lon/lat in EPSG:4326).
-

@@ -203,6 +203,9 @@ python utils/output_plot.py \
   --out data/20250314Z0000_flood_depth.png \
   --title "LPERFECT flood depth – 2025-03-14 00:00 UTC"
 ```
+- Optional refinements:
+  - Crop the map to a region (e.g., Campania) with `--bbox 13.7 39.9 15.9 41.6`.
+  - Overlay and label boundaries when `geopandas` is installed, e.g. `--overlay data/boundaries/regions.geojson --overlay-label-field name`.
 
 ## 8. Submit a Slurm batch job (HPC)
 To run the 6-hour-leg workflow on an HPC cluster managed by Slurm, create `run_lperfect_use_case_02.slurm`:

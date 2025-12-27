@@ -105,7 +105,7 @@ def read_domain_netcdf_rank0(cfg: Dict[str, Any]) -> Domain:  # define function 
     ch_name = varmap.get("channel_mask", "channel_mask")  # set ch_name
 
     # Read arrays.
-    dem = np.asarray(ds[dem_name].values).astype(np.float64)  # set dem
+    dem = np.asarray(ds[dem_name].values).astype(np.float32)  # set dem
     active_mask = np.isfinite(dem)  # set active_mask
 
     d8_da = ds[d8_name]  # set d8_da
@@ -116,7 +116,7 @@ def read_domain_netcdf_rank0(cfg: Dict[str, Any]) -> Domain:  # define function 
         d8_mask |= d8_raw == d8_fill  # execute statement
     d8_clean = np.where(d8_mask, 0, d8_raw)  # set d8_clean
     d8 = np.where(active_mask, d8_clean, 0).astype(np.int32)  # set d8
-    cn = np.asarray(ds[cn_name].values).astype(np.float64)  # set cn
+    cn = np.asarray(ds[cn_name].values).astype(np.float32)  # set cn
 
     # Optional channel mask.
     channel_mask = None  # set channel_mask
@@ -133,6 +133,8 @@ def read_domain_netcdf_rank0(cfg: Dict[str, Any]) -> Domain:  # define function 
 
     # Estimate cell area.
     cell_area_m2 = cell_area_m2_from_domain(ds, x_name=x_name, y_name=y_name)  # set cell_area_m2
+    if isinstance(cell_area_m2, np.ndarray):
+        cell_area_m2 = cell_area_m2.astype(np.float32)
 
     # Preserve CF grid mapping if present.
     gm_name = ds[dem_name].attrs.get("grid_mapping", None)  # set gm_name

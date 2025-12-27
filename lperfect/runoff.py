@@ -30,15 +30,17 @@ def scs_cn_cumulative_runoff_mm(  # define function scs_cn_cumulative_runoff_mm
     -----
     CN must be in (0,100]. Invalid CN yields Q=0.
     """
-    # Choose backend.
+    # Choose backend and dtype (float32 to reduce memory when inputs are float32).
     xp = get_array_module(device)  # set xp
+    inputs_float32 = getattr(P_cum_mm, "dtype", None) == np.float32 and getattr(CN, "dtype", None) == np.float32
+    target_dtype = xp.float32 if inputs_float32 else xp.float64
 
     # Ensure float arrays.
-    P = to_device(P_cum_mm, xp).astype(xp.float64)  # set P
-    CNv = to_device(CN, xp).astype(xp.float64)  # set CNv
+    P = to_device(P_cum_mm, xp).astype(target_dtype, copy=False)  # set P
+    CNv = to_device(CN, xp).astype(target_dtype, copy=False)  # set CNv
 
     # Initialize runoff to zero.
-    Q = xp.zeros_like(P, dtype=xp.float64)  # set Q
+    Q = xp.zeros_like(P, dtype=target_dtype)  # set Q
 
     # Mask valid cells.
     ok = (CNv > 0.0) & (CNv <= 100.0) & xp.isfinite(CNv) & xp.isfinite(P)  # set ok
@@ -46,7 +48,7 @@ def scs_cn_cumulative_runoff_mm(  # define function scs_cn_cumulative_runoff_mm
         return to_numpy(Q)  # return to_numpy(Q)
 
     # Potential retention S.
-    S = xp.zeros_like(P, dtype=xp.float64)  # set S
+    S = xp.zeros_like(P, dtype=target_dtype)  # set S
     S[ok] = (25400.0 / CNv[ok]) - 254.0  # execute statement
 
     # Initial abstraction.

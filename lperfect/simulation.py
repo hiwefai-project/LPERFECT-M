@@ -112,13 +112,13 @@ def run_simulation(
 
         if np.isscalar(cell_area_m2):
             base = float(np.sqrt(cell_area_m2))
-            dist = np.zeros_like(valid, dtype=np.float64)
+            dist = np.zeros_like(valid, dtype=np.float32)
             dist[orth] = base
             dist[diag] = base * np.sqrt(2.0)
             return dist
 
-        base = np.sqrt(cell_area_m2.astype(np.float64))
-        dist = np.zeros_like(base, dtype=np.float64)
+        base = np.sqrt(cell_area_m2.astype(np.float32))
+        dist = np.zeros_like(base, dtype=np.float32)
         dist[orth] = base[orth]
         dist[diag] = base[diag] * np.sqrt(2.0)
         return dist
@@ -134,8 +134,8 @@ def run_simulation(
             raise ValueError("travel_time_auto velocities must be positive.")
 
         dist = _compute_hop_distances(dom.cell_area_m2)
-        hill = np.clip(dist / vel_hill, min_s, max_s)
-        ch = np.clip(dist / vel_ch, min_s, max_s)
+        hill = np.clip(dist / vel_hill, min_s, max_s).astype(np.float32)
+        ch = np.clip(dist / vel_ch, min_s, max_s).astype(np.float32)
         return hill, ch
 
     if travel_time_mode == "auto":
@@ -185,7 +185,7 @@ def run_simulation(
     risk_cfg = cfg.get("risk", {})  # set risk_cfg
     do_risk = bool(risk_cfg.get("enabled", True))  # set do_risk
     risk_accum = None  # set risk_accum
-    flood_depth_max = np.where(dom.active_mask, 0.0, np.nan).astype(np.float64)  # set flood_depth_max
+    flood_depth_max = np.where(dom.active_mask, 0.0, np.nan).astype(np.float32)  # set flood_depth_max
     inundation_mask_max = np.where(dom.active_mask, 0, 0).astype(np.int8)  # set inundation_mask_max
 
     # ------------------------------
@@ -198,16 +198,16 @@ def run_simulation(
         # Serial state uses full arrays.
         if restart_in:  # check condition restart_in:
             r = load_restart_netcdf_rank0(restart_in)  # set r
-            P_slab = r["P_cum_mm"]  # set P_slab
-            Q_slab = r["Q_cum_mm"]  # set Q_slab
+            P_slab = r["P_cum_mm"].astype(np.float32)  # set P_slab
+            Q_slab = r["Q_cum_mm"].astype(np.float32)  # set Q_slab
             particles = Particles(r=r["r"], c=r["c"], vol=r["vol"], tau=r["tau"])  # set particles
             cum_rain = r["cum_rain_vol_m3"]  # set cum_rain
             cum_runoff = r["cum_runoff_vol_m3"]  # set cum_runoff
             cum_outflow = r["cum_outflow_vol_m3"]  # set cum_outflow
             elapsed_s0 = r["elapsed_s"]  # set elapsed_s0
         else:  # fallback branch
-            P_slab = np.zeros((nrows, ncols), dtype=np.float64)  # set P_slab
-            Q_slab = np.zeros((nrows, ncols), dtype=np.float64)  # set Q_slab
+            P_slab = np.zeros((nrows, ncols), dtype=np.float32)  # set P_slab
+            Q_slab = np.zeros((nrows, ncols), dtype=np.float32)  # set Q_slab
             particles = empty_particles()  # set particles
             cum_rain = cum_runoff = cum_outflow = 0.0  # set cum_rain
             elapsed_s0 = 0.0  # set elapsed_s0
@@ -224,8 +224,8 @@ def run_simulation(
                 if r["Q_cum_mm"].shape != (nrows, ncols):  # check condition r["Q_cum_mm"].shape != (nrows, ncols):
                     raise ValueError("Restart grid mismatch for Q_cum_mm")                  # raise ValueError("Restart grid mismatch for Q_cum_mm")
 
-            P_full = r["P_cum_mm"]  # set P_full
-            Q_full = r["Q_cum_mm"]  # set Q_full
+            P_full = r["P_cum_mm"].astype(np.float32)  # set P_full
+            Q_full = r["Q_cum_mm"].astype(np.float32)  # set Q_full
             particles_all = Particles(r=r["r"], c=r["c"], vol=r["vol"], tau=r["tau"])  # set particles_all
             cum_rain = r["cum_rain_vol_m3"]  # set cum_rain
             cum_runoff = r["cum_runoff_vol_m3"]  # set cum_runoff
@@ -244,14 +244,17 @@ def run_simulation(
         cum_rain, cum_runoff, cum_outflow, elapsed_s0 = map(float, scal.tolist())  # set cum_rain, cum_runoff, cum_outflow, elapsed_s0
 
         # Scatter slab fields.
-        P_slab = scatter_field_slab(comm, P_full, nrows, ncols, np.float64)  # set P_slab
-        Q_slab = scatter_field_slab(comm, Q_full, nrows, ncols, np.float64)  # set Q_slab
+        P_slab = scatter_field_slab(comm, P_full, nrows, ncols, np.float32)  # set P_slab
+        Q_slab = scatter_field_slab(comm, Q_full, nrows, ncols, np.float32)  # set Q_slab
 
         # Scatter particles by row ownership.
         particles = scatter_particles_from_rank0(comm, particles_all, nrows=nrows)  # set particles
 
         # Local slab bounds.
         r0, r1 = slab_bounds(nrows, size, rank)  # set r0, r1
+
+    if rank == 0:
+        logger.debug("State arrays initialized with dtype P=%s Q=%s", P_slab.dtype, Q_slab.dtype)
 
     # ------------------------------
     # Output helpers and bookkeeping
@@ -313,7 +316,9 @@ def run_simulation(
         if not do_risk:
             return np.full_like(flood_depth, np.nan, dtype=np.float64)
         if risk_accum is None:
-            risk_accum = compute_flow_accum_area_m2(dom.d8, encoding, dom.cell_area_m2, dom.active_mask)
+            risk_accum = compute_flow_accum_area_m2(dom.d8, encoding, dom.cell_area_m2, dom.active_mask).astype(np.float32)
+            if rank == 0:
+                logger.debug("Computed flow accumulation field (dtype=%s)", risk_accum.dtype)
         return compute_risk_index(
             runoff_cum_mm=runoff_mm,
             flow_accum_m2=risk_accum,
@@ -582,7 +587,7 @@ def run_simulation(
             comm.Bcast(rain_step_mm, root=0)  # execute statement
 
         # Slice rainfall to local slab.
-        rain_slab_mm = rain_step_mm[r0:r1, :].astype(np.float64)  # set rain_slab_mm
+        rain_slab_mm = rain_step_mm[r0:r1, :].astype(np.float32)  # set rain_slab_mm
 
         # Compute rain volume injected this step (for diagnostics).
         if np.isscalar(dom.cell_area_m2):  # check condition np.isscalar(dom.cell_area_m2):
@@ -595,7 +600,8 @@ def run_simulation(
 
         # Compute cumulative runoff with CN and incremental runoff for this step.
         CN_slab = dom.cn[r0:r1, :]  # set CN_slab
-        Q_cum_slab = scs_cn_cumulative_runoff_mm(P_slab, CN_slab, ia_ratio=ia_ratio, device=device)  # set Q_cum_slab
+        Q_cum_slab_full = scs_cn_cumulative_runoff_mm(P_slab, CN_slab, ia_ratio=ia_ratio, device=device)  # set Q_cum_slab
+        Q_cum_slab = Q_cum_slab_full.astype(np.float32)  # set Q_cum_slab
         dQ_mm = np.maximum(Q_cum_slab - Q_slab, 0.0)  # set dQ_mm
         Q_slab = Q_cum_slab  # set Q_slab
 

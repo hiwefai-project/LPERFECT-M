@@ -15,10 +15,11 @@ def compute_flow_accum_area_m2(d8: np.ndarray, encoding: str, cell_area_m2: floa
     valid, ds_r, ds_c = build_downstream_index(d8, encoding)  # set valid, ds_r, ds_c
     H, W = d8.shape  # set H, W
 
+    acc_dtype = np.float32 if (not np.isscalar(cell_area_m2) and getattr(cell_area_m2, "dtype", None) == np.float32) else np.float64
     if np.isscalar(cell_area_m2):  # check condition np.isscalar(cell_area_m2):
-        acc = np.where(active_mask, float(cell_area_m2), 0.0).astype(np.float64)  # set acc
+        acc = np.where(active_mask, float(cell_area_m2), 0.0).astype(acc_dtype)  # set acc
     else:  # fallback branch
-        acc = np.where(active_mask, cell_area_m2, 0.0).astype(np.float64)  # set acc
+        acc = np.where(active_mask, cell_area_m2, 0.0).astype(acc_dtype)  # set acc
 
     indeg = np.zeros((H, W), dtype=np.int32)  # set indeg
 
@@ -51,27 +52,28 @@ def compute_flow_accum_area_m2(d8: np.ndarray, encoding: str, cell_area_m2: floa
 
 def robust_normalize(a: np.ndarray, mask: np.ndarray, p_low: float, p_high: float) -> np.ndarray:  # define function robust_normalize
     """Robust normalization to [0,1] using percentiles."""  # execute statement
-    x = np.asarray(a, dtype=np.float64)  # set x
+    target_dtype = np.float32 if getattr(a, "dtype", None) == np.float32 else np.float64
+    x = np.asarray(a, dtype=target_dtype)  # set x
     valid = mask & np.isfinite(x)  # set valid
     if not np.any(valid):  # check condition not np.any(valid):
-        return np.where(mask, 0.0, np.nan)  # return np.where(mask, 0.0, np.nan)
+        return np.where(mask, target_dtype(0.0), np.nan).astype(target_dtype)  # return np.where(mask, 0.0, np.nan).astype(target_dtype)
 
     x_masked = np.where(valid, x, np.nan)  # set x_masked
-    lo = np.nanpercentile(x_masked, p_low)  # set lo
-    hi = np.nanpercentile(x_masked, p_high)  # set hi
+    lo = target_dtype(np.nanpercentile(x_masked, p_low))  # set lo
+    hi = target_dtype(np.nanpercentile(x_masked, p_high))  # set hi
 
     if (not np.isfinite(lo)) or (not np.isfinite(hi)) or hi <= lo:  # check condition (not np.isfinite(lo)) or (not np.isfinite(hi)) or hi <= lo:
-        positives = x_masked[x_masked > 0.0]  # set positives
+        positives = x_masked[x_masked > target_dtype(0.0)]  # set positives
         if positives.size == 0:  # check condition positives.size == 0:
-            return np.where(mask, 0.0, np.nan)  # return np.where(mask, 0.0, np.nan)
-        lo = np.nanpercentile(positives, p_low)  # set lo
-        hi = np.nanpercentile(positives, p_high)  # set hi
+            return np.where(mask, target_dtype(0.0), np.nan).astype(target_dtype)  # return np.where(mask, 0.0, np.nan).astype(target_dtype)
+        lo = target_dtype(np.nanpercentile(positives, p_low))  # set lo
+        hi = target_dtype(np.nanpercentile(positives, p_high))  # set hi
 
     if (not np.isfinite(lo)) or (not np.isfinite(hi)) or hi <= lo:  # check condition (not np.isfinite(lo)) or (not np.isfinite(hi)) or hi <= lo:
-        return np.where(mask, 0.0, np.nan)  # return np.where(mask, 0.0, np.nan)
+        return np.where(mask, target_dtype(0.0), np.nan).astype(target_dtype)  # return np.where(mask, 0.0, np.nan).astype(target_dtype)
 
     y = (x - lo) / (hi - lo)  # set y
-    return np.where(valid, np.clip(y, 0.0, 1.0), np.nan)  # return np.where(valid, np.clip(y, 0.0, 1.0), np.nan)
+    return np.where(valid, np.clip(y, target_dtype(0.0), target_dtype(1.0)), np.nan).astype(target_dtype)  # return np.where(valid, np.clip(y, 0.0, 1.0), np.nan).astype(target_dtype)
 
 
 def compute_risk_index(runoff_cum_mm: np.ndarray, flow_accum_m2: np.ndarray, active_mask: np.ndarray,  # define function compute_risk_index

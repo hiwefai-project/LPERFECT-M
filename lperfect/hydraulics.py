@@ -253,7 +253,7 @@ def advect_particles_one_step(  # define function advect_particles_one_step
 def local_volgrid_from_particles_slab(p: Particles, r0: int, r1: int, ncols: int, shared_cfg: Optional["SharedMemoryConfig"] = None) -> np.ndarray:  # define function local_volgrid_from_particles_slab
     """Accumulate particle volume into a local slab grid."""  # execute statement
     slab_h = r1 - r0  # set slab_h
-    volgrid = np.zeros((slab_h, ncols), dtype=np.float64)  # set volgrid
+    volgrid = np.zeros((slab_h, ncols), dtype=np.float32)  # set volgrid
     if p.r.size == 0:  # check condition p.r.size == 0:
         return volgrid  # return volgrid
     m = (p.r >= r0) & (p.r < r1)  # set m
@@ -281,7 +281,7 @@ def local_volgrid_from_particles_slab(p: Particles, r0: int, r1: int, ncols: int
             futures = [ex.submit(_partial, s, e) for s, e in chunks]
             for fut in futures:
                 partials.append(fut.result())
-        volgrid = np.sum(partials, axis=0, dtype=np.float64)  # set volgrid
+        volgrid = np.sum(partials, axis=0, dtype=np.float32)  # set volgrid
         return volgrid  # return volgrid
 
     rr = p.r[m] - r0  # set rr

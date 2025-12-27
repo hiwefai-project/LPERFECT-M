@@ -314,26 +314,28 @@ def run_simulation(
         if np.isscalar(dom.cell_area_m2):
             flood_depth = volgrid / float(dom.cell_area_m2)
         else:
-            flood_depth = np.divide(volgrid, dom.cell_area_m2, out=np.zeros_like(volgrid), where=(dom.cell_area_m2 > 0))
-        return np.where(dom.active_mask, flood_depth, np.nan)
+            flood_depth = np.divide(
+                volgrid, dom.cell_area_m2, out=np.zeros_like(volgrid), where=(dom.cell_area_m2 > 0)
+            )
+        return np.where(dom.active_mask, flood_depth, np.nan).astype(np.float32)
 
     def _compute_risk_field(runoff_mm: np.ndarray, flood_depth: np.ndarray) -> np.ndarray:
         """Compute risk index if enabled, otherwise fill with NaNs."""
         nonlocal risk_accum
         if not do_risk:
-            return np.full_like(flood_depth, np.nan, dtype=np.float64)
+            return np.full_like(flood_depth, np.nan, dtype=np.float32)
         if risk_accum is None:
             risk_accum = compute_flow_accum_area_m2(dom.d8, encoding, dom.cell_area_m2, dom.active_mask).astype(np.float32)
             if rank == 0:
                 logger.debug("Computed flow accumulation field (dtype=%s)", risk_accum.dtype)
         return compute_risk_index(
-            runoff_cum_mm=runoff_mm,
+            runoff_cum_mm=runoff_mm.astype(np.float32, copy=False),
             flow_accum_m2=risk_accum,
             active_mask=dom.active_mask,
             balance=float(risk_cfg.get("balance", 0.55)),
             p_low=float(risk_cfg.get("p_low", 5.0)),
             p_high=float(risk_cfg.get("p_high", 95.0)),
-        )
+        ).astype(np.float32)
 
     def _gather_outputs_for_rank0() -> tuple[np.ndarray | None, np.ndarray | None]:
         """Gather flood depth and risk to rank0 (or return locally in serial)."""
@@ -364,10 +366,13 @@ def run_simulation(
                 dom.active_mask & np.isfinite(flood_depth) & (flood_depth >= inundation_threshold_m), 1, 0
             ).astype(np.int8)
             nonlocal flood_depth_max, inundation_mask_max
-            current_max = np.where(np.isfinite(flood_depth_max), flood_depth_max, -np.inf)
-            new_vals = np.where(np.isfinite(flood_depth), flood_depth, -np.inf)
-            combined_max = np.maximum(current_max, new_vals)
-            flood_depth_max = np.where(dom.active_mask, np.where(combined_max == -np.inf, np.nan, combined_max), np.nan)
+            neg_inf32 = np.float32(-np.inf)
+            current_max = np.where(np.isfinite(flood_depth_max), flood_depth_max, neg_inf32)
+            new_vals = np.where(np.isfinite(flood_depth), flood_depth, neg_inf32)
+            combined_max = np.maximum(current_max, new_vals).astype(np.float32)
+            flood_depth_max = np.where(
+                dom.active_mask, np.where(combined_max == neg_inf32, np.nan, combined_max), np.nan
+            ).astype(np.float32)
             inundation_mask_max = np.where((inundation_mask_max == 1) | (inundation_mask == 1), 1, 0).astype(np.int8)
 
             logger.info(

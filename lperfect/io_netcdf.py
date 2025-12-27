@@ -66,7 +66,7 @@ def write_results_netcdf_rank0(
     )  # execute statement
 
     ds["flood_depth"] = xr.DataArray(  # execute statement
-        flood_depth_m.astype(np.float32)[None, ...],  # execute statement
+        flood_depth_m.astype(np.float32, copy=False)[None, ...],  # execute statement
         dims=("time", dom.y_name, dom.x_name),  # set dims
         attrs={  # set attrs
             "standard_name": "water_depth",  # execute statement
@@ -76,7 +76,7 @@ def write_results_netcdf_rank0(
     )  # execute statement
 
     ds["risk_index"] = xr.DataArray(  # execute statement
-        risk_index.astype(np.float32)[None, ...],  # execute statement
+        risk_index.astype(np.float32, copy=False)[None, ...],  # execute statement
         dims=("time", dom.y_name, dom.x_name),  # set dims
         attrs={  # set attrs
             "long_name": "Hydrogeological risk index",  # execute statement
@@ -85,7 +85,7 @@ def write_results_netcdf_rank0(
     )  # execute statement
 
     ds["inundation_mask"] = xr.DataArray(  # execute statement
-        inundation_mask.astype(np.int8)[None, ...],  # execute statement
+        inundation_mask.astype(np.int8, copy=False)[None, ...],  # execute statement
         dims=("time", dom.y_name, dom.x_name),  # set dims
         attrs={  # set attrs
             "long_name": "Inundation mask (1=inundated, 0=dry)",  # execute statement
@@ -97,7 +97,7 @@ def write_results_netcdf_rank0(
     )  # execute statement
 
     ds["flood_depth_max"] = xr.DataArray(  # execute statement
-        flood_depth_max.astype(np.float32),  # execute statement
+        flood_depth_max.astype(np.float32, copy=False),  # execute statement
         dims=(dom.y_name, dom.x_name),  # set dims
         attrs={  # set attrs
             "long_name": "Maximum flood water depth over simulation",  # execute statement
@@ -106,7 +106,7 @@ def write_results_netcdf_rank0(
     )  # execute statement
 
     ds["inundation_mask_max"] = xr.DataArray(  # execute statement
-        inundation_mask_max.astype(np.int8),  # execute statement
+        inundation_mask_max.astype(np.int8, copy=False),  # execute statement
         dims=(dom.y_name, dom.x_name),  # set dims
         attrs={  # set attrs
             "long_name": "Ever inundated during simulation",  # execute statement

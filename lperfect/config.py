@@ -110,7 +110,7 @@ def default_config() -> Dict[str, Any]:  # define function default_config
         "compute": {  # execute statement
             "device": "cpu",  # execute statement
             "shared_memory": {  # execute statement
-                "enabled": False,  # execute statement
+                "enabled": None,  # execute statement
                 "workers": None,  # execute statement
                 "min_particles_per_worker": 5000,  # execute statement
                 "chunk_size": 65536,  # execute statement

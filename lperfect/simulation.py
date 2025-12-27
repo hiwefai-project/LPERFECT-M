@@ -87,7 +87,8 @@ def run_simulation(
     shared_cfg = SharedMemoryConfig.from_dict(compute_cfg.get("shared_memory", {}))  # set shared_cfg
     if rank == 0 and shared_cfg.enabled and shared_cfg.workers > 1:  # check condition rank == 0 and shared_cfg.enabled and shared_cfg.workers > 1:
         logger.info(
-            "Shared-memory parallelism: enabled with %d workers (chunk=%d, min_particles=%d)",
+            "Shared-memory parallelism: %s with %d workers (chunk=%d, min_particles=%d)",
+            "auto-enabled" if shared_cfg.auto_enabled else "enabled",
             shared_cfg.workers,
             shared_cfg.chunk_size,
             shared_cfg.min_particles_per_worker,
@@ -894,6 +895,7 @@ def run_simulation(
                     "ranks": int(size),
                     "shared_memory": {
                         "enabled": bool(shared_cfg.enabled),
+                        "auto_enabled": bool(shared_cfg.auto_enabled),
                         "workers": int(shared_cfg.workers),
                         "chunk_size": int(shared_cfg.chunk_size),
                         "min_particles_per_worker": int(shared_cfg.min_particles_per_worker),

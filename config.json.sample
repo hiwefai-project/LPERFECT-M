@@ -98,7 +98,13 @@
     "fill_value": -9999.0
   },
   "compute": {
-    "device": "cpu"
+    "device": "cpu",
+    "shared_memory": {
+      "enabled": null,
+      "workers": null,
+      "min_particles_per_worker": 5000,
+      "chunk_size": 65536
+    }
   },
   "metrics": {
     "parallelization": {

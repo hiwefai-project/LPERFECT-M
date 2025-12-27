@@ -24,22 +24,30 @@ class SharedMemoryConfig:
     workers: int
     min_particles_per_worker: int
     chunk_size: int
+    auto_enabled: bool
 
     @classmethod
     def from_dict(cls, cfg: dict) -> "SharedMemoryConfig":
-        """Build config from raw dictionary."""
-        enabled = bool(cfg.get("enabled", False))
+        """Build config from raw dictionary.
+
+        If `enabled` is omitted (or set to null in JSON), shared-memory will auto-enable
+        when more than one worker is available on the host.
+        """
+        enabled_raw = cfg.get("enabled", None)
+        auto_enabled = enabled_raw is None
         raw_workers = cfg.get("workers", None)
         # Default: use hardware concurrency if available.
         workers = int(raw_workers) if raw_workers not in (None, "") else max(1, os.cpu_count() or 1)
         workers = max(1, workers)
         min_particles = int(cfg.get("min_particles_per_worker", 5000))
         chunk_size = int(cfg.get("chunk_size", 65536))
+        enabled = bool(enabled_raw) if enabled_raw is not None else workers > 1
         return cls(
             enabled=enabled,
             workers=workers,
             min_particles_per_worker=max(1, min_particles),
             chunk_size=max(1, chunk_size),
+            auto_enabled=auto_enabled,
         )
 
 

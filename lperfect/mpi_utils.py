@@ -162,7 +162,17 @@ def scatter_field_slab(comm, full: Optional[np.ndarray], nrows: int, ncols: int,
     # Allocate local slab.
     local = np.empty((slab_h, ncols), dtype=dtype)  # set local
     # Prepare rank0 send buffer.
-    sendbuf = full.astype(dtype).ravel() if rank == 0 and full is not None else None  # set sendbuf
+    if rank == 0:
+        if full is None:
+            # Initialize zeros when no full-field state is provided (e.g., fresh run with no restart).
+            sendbuf = np.zeros((nrows, ncols), dtype=dtype).ravel()
+        else:
+            arr = np.asarray(full)
+            if arr.shape != (nrows, ncols):
+                raise ValueError(f"Scatter source has shape {arr.shape}, expected {(nrows, ncols)}")
+            sendbuf = arr.astype(dtype, copy=False).ravel()
+    else:
+        sendbuf = None
     # Map dtype to MPI datatype.
     mpitype = MPI._typedict[np.dtype(dtype).char]  # set mpitype
     # Scatter.

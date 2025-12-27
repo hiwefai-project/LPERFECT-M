@@ -639,6 +639,7 @@ def run_simulation(
         Q_cum_slab = Q_cum_slab_full.astype(np.float32)  # set Q_cum_slab
         dQ_mm = np.maximum(Q_cum_slab - Q_slab, 0.0)  # set dQ_mm
         Q_slab = Q_cum_slab  # set Q_slab
+        cn_out = prev_Q_slab  # reuse previous buffer as next output target
         runoff_t = perf_counter() - runoff_t0
 
         # Convert incremental runoff to meters.

@@ -112,4 +112,18 @@ def scs_cn_cumulative_runoff_mm(  # define function scs_cn_cumulative_runoff_mm
         den = (P[cond] - Ia[cond] + S[cond])
         Q[cond] = num / den
 
+    cond = ok & (Q > 0.0) & (S > 0.0)
+    if bool(xp.any(cond)):
+        denom = workspace
+        if denom is not None:
+            if denom.shape != Q.shape:
+                raise ValueError("workspace array must match precipitation shape")
+            if denom.dtype != target_dtype:
+                raise ValueError("workspace dtype must match target dtype")
+        else:
+            denom = xp.empty_like(Q, dtype=target_dtype)
+        denom.fill(1.0)
+        xp.add(Q, S, out=denom, where=cond, casting="unsafe")  # denom = P - Ia + S
+        xp.multiply(Q, Q, out=Q, where=cond)  # Q = (P - Ia)^2
+        xp.divide(Q, denom, out=Q, where=cond)
     return to_numpy(Q)  # return to_numpy(Q)

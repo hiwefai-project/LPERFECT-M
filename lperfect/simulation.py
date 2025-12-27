@@ -368,16 +368,14 @@ def run_simulation(
         if rank == 0 and flood_depth is not None and risk_field is not None:
             inundation_mask = np.where(
                 dom.active_mask & np.isfinite(flood_depth) & (flood_depth >= inundation_threshold_m), 1, 0
-            ).astype(np.int8)
+            ).astype(np.int8, copy=False)
             nonlocal flood_depth_max, inundation_mask_max
-            neg_inf32 = np.float32(-np.inf)
-            current_max = np.where(np.isfinite(flood_depth_max), flood_depth_max, neg_inf32)
-            new_vals = np.where(np.isfinite(flood_depth), flood_depth, neg_inf32)
-            combined_max = np.maximum(current_max, new_vals).astype(np.float32)
-            flood_depth_max = np.where(
-                dom.active_mask, np.where(combined_max == neg_inf32, np.nan, combined_max), np.nan
-            ).astype(np.float32)
-            inundation_mask_max = np.where((inundation_mask_max == 1) | (inundation_mask == 1), 1, 0).astype(np.int8)
+            # Update the running maximum in place to avoid large temporary arrays.
+            np.fmax(flood_depth_max, flood_depth, out=flood_depth_max)
+            # Preserve inactive cells as NaN after the in-place update.
+            flood_depth_max[~dom.active_mask] = np.nan
+            # Track any cell that has ever been inundated without allocating a fresh array.
+            np.bitwise_or(inundation_mask_max, inundation_mask, out=inundation_mask_max)
 
             logger.info(
                 "Adding output time slice at t=%.3fs (%.3f h) to %s",

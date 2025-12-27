@@ -69,7 +69,8 @@
       "time_var": "time",
       "select": "previous",
       "mode": "intensity_mmph",
-      "weight": 1.0
+      "weight": 1.0,
+      "preload": true
     }
     }
   },

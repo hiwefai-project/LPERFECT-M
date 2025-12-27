@@ -54,6 +54,7 @@ class RainSource:  # define class RainSource
     require_time_dim: bool = True  # execute statement
     select: str = "previous"  # execute statement
     value: Optional[float] = None  # execute statement
+    preload: bool = True  # execute statement
 
 
 # Simple cache to avoid reopening NetCDF files each step.
@@ -61,6 +62,8 @@ _NC_CACHE: Dict[str, xr.Dataset] = {}  # execute statement
 _NC_SCHEMA_CACHE: Dict[str, bool] = {}  # execute statement
 # Track the last rain time index logged per source to avoid duplicate messages.
 _RAIN_TIME_LOG: Dict[Tuple[str, str], int] = {}  # execute statement
+# Cache fully loaded rain arrays to cut per-step xarray overhead (rank0 only).
+_RAIN_ARRAY_CACHE: Dict[Tuple[str, str], Tuple[np.ndarray, Optional[np.ndarray]]] = {}  # execute statement
 
 
 def xr_open_cached(path: str) -> xr.Dataset:  # define function xr_open_cached
@@ -79,6 +82,7 @@ def xr_close_cache() -> None:  # define function xr_close_cache
             pass  # no-op placeholder
     _NC_CACHE.clear()  # execute statement
     _NC_SCHEMA_CACHE.clear()  # execute statement
+    _RAIN_ARRAY_CACHE.clear()  # execute statement
 
 
 def build_rain_sources(cfg: Dict[str, Any]) -> List[RainSource]:  # define function build_rain_sources
@@ -105,6 +109,7 @@ def build_rain_sources(cfg: Dict[str, Any]) -> List[RainSource]:  # define funct
             require_time_dim=bool(sc.get("require_time_dim", schema_cfg.get("require_time_dim", True))),  # set require_time_dim
             select=str(sc.get("select", "previous")),  # set select
             value=sc.get("value", None),  # set value
+            preload=bool(sc.get("preload", True)),  # set preload
         ))  # execute statement
     return out  # return out
 
@@ -213,6 +218,35 @@ def _log_rain_time_usage(src: RainSource, time_vals: Optional[np.ndarray], idx: 
     _RAIN_TIME_LOG[key] = idx  # execute statement
 
 
+def _preload_rain_array(src: RainSource) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    """Load rain DataArray to a NumPy array once to avoid per-step xarray overhead."""
+    key = (src.path or "", src.var or "")
+    if key in _RAIN_ARRAY_CACHE:
+        return _RAIN_ARRAY_CACHE[key]
+
+    ds = xr_open_cached(src.path or "")
+    if not _NC_SCHEMA_CACHE.get(src.path or "", False):
+        _validate_rain_dataset(ds, src)
+        _NC_SCHEMA_CACHE[src.path or ""] = True
+
+    da = ds[src.var]  # type: ignore[index]
+    if da.ndim == 2:
+        arr = np.asarray(da.values)
+        time_vals = None
+    elif da.ndim == 3:
+        tdim = src.time_var if src.time_var in da.dims else da.dims[0]
+        # Ensure time is the leading axis for cheap slicing.
+        if da.dims[0] != tdim:
+            da = da.transpose(tdim, ...)
+        arr = np.asarray(da.values)
+        time_vals = _decode_cf_time_axis(ds, src)
+    else:
+        raise ValueError("Rain var must be 2D or 3D (time,y,x)")
+
+    _RAIN_ARRAY_CACHE[key] = (arr, time_vals)
+    return arr, time_vals
+
+
 def blended_rain_step_mm_rank0(  # define function blended_rain_step_mm_rank0
     sources: List[RainSource],  # execute statement
     shape: Tuple[int, int],  # execute statement
@@ -236,36 +270,56 @@ def blended_rain_step_mm_rank0(  # define function blended_rain_step_mm_rank0
         elif src.kind == "netcdf":  # check alternate condition src.kind == "netcdf":
             if not src.path or not src.var:  # check condition not src.path or not src.var:
                 raise ValueError(f"Rain source '{src.name}' netcdf requires 'path' and 'var'")  # raise ValueError(f"Rain source '{src.name}' netcdf requires 'path' and 'var'")
-            ds = xr_open_cached(src.path)  # set ds
-            if not _NC_SCHEMA_CACHE.get(src.path, False):  # check condition not _NC_SCHEMA_CACHE.get(src.path, False):
-                _validate_rain_dataset(ds, src)  # execute statement
-                _NC_SCHEMA_CACHE[src.path] = True  # execute statement
-            da = ds[src.var]  # set da
+            if src.preload:
+                arr, time_vals = _preload_rain_array(src)
+                if arr.ndim == 2:
+                    field = arr
+                else:
+                    if src.select == "step" or sim_time is None:
+                        it = min(step_idx, arr.shape[0] - 1)
+                    else:
+                        if time_vals is None:
+                            raise ValueError(f"Rain dataset for '{src.name}' missing time axis during preload.")
+                        if src.select == "nearest":
+                            it = pick_time_index(time_vals, sim_time)
+                        elif src.select in {"previous", "floor"}:
+                            it = int(np.searchsorted(time_vals, sim_time, side="right") - 1)
+                            it = int(np.clip(it, 0, time_vals.size - 1))
+                        else:
+                            raise ValueError(f"Unknown rain selection mode '{src.select}' for '{src.name}'")
+                    _log_rain_time_usage(src, time_vals, it)
+                    field = np.take(arr, indices=it, axis=0)
+            else:
+                ds = xr_open_cached(src.path)
+                if not _NC_SCHEMA_CACHE.get(src.path, False):
+                    _validate_rain_dataset(ds, src)
+                    _NC_SCHEMA_CACHE[src.path] = True
+                da = ds[src.var]
 
-            if da.ndim == 2:  # check condition da.ndim == 2:
-                field = np.asarray(da.values)  # set field
-            elif da.ndim == 3:  # check alternate condition da.ndim == 3:
-                tdim = src.time_var if src.time_var in da.dims else da.dims[0]  # set tdim
-                time_vals: Optional[np.ndarray] = None  # set time_vals
-                if src.select == "step" or sim_time is None:  # check condition src.select == "step" or sim_time is None:
-                    it = min(step_idx, da.sizes[tdim] - 1)  # set it
-                    try:  # start exception handling
-                        time_vals = _decode_cf_time_axis(ds, src)  # set time_vals
-                    except Exception:  # handle exception Exception:
-                        time_vals = None  # set time_vals
-                else:  # fallback branch
-                    time_vals = _decode_cf_time_axis(ds, src)  # set time_vals
-                    if src.select == "nearest":  # check condition src.select == "nearest":
-                        it = pick_time_index(time_vals, sim_time)  # set it
-                    elif src.select in {"previous", "floor"}:  # check alternate condition src.select in {"previous", "floor"}:
-                        it = int(np.searchsorted(time_vals, sim_time, side="right") - 1)  # set it
-                        it = int(np.clip(it, 0, time_vals.size - 1))  # set it
-                    else:  # fallback branch
-                        raise ValueError(f"Unknown rain selection mode '{src.select}' for '{src.name}'")  # raise ValueError(f"Unknown rain selection mode '{src.select}' for '{src.name}'")
-                _log_rain_time_usage(src, time_vals, it)  # execute statement
-                field = np.asarray(da.isel({tdim: it}).values)  # set field
-            else:  # fallback branch
-                raise ValueError("Rain var must be 2D or 3D (time,y,x)")  # raise ValueError("Rain var must be 2D or 3D (time,y,x)")
+                if da.ndim == 2:
+                    field = np.asarray(da.values)
+                elif da.ndim == 3:
+                    tdim = src.time_var if src.time_var in da.dims else da.dims[0]
+                    time_vals: Optional[np.ndarray] = None
+                    if src.select == "step" or sim_time is None:
+                        it = min(step_idx, da.sizes[tdim] - 1)
+                        try:
+                            time_vals = _decode_cf_time_axis(ds, src)
+                        except Exception:
+                            time_vals = None
+                    else:
+                        time_vals = _decode_cf_time_axis(ds, src)
+                        if src.select == "nearest":
+                            it = pick_time_index(time_vals, sim_time)
+                        elif src.select in {"previous", "floor"}:
+                            it = int(np.searchsorted(time_vals, sim_time, side="right") - 1)
+                            it = int(np.clip(it, 0, time_vals.size - 1))
+                        else:
+                            raise ValueError(f"Unknown rain selection mode '{src.select}' for '{src.name}'")
+                    _log_rain_time_usage(src, time_vals, it)
+                    field = np.asarray(da.isel({tdim: it}).values)
+                else:
+                    raise ValueError("Rain var must be 2D or 3D (time,y,x)")
 
             if field.shape != (H, W):  # check condition field.shape != (H, W):
                 raise ValueError(f"Rain shape {field.shape} != domain shape {(H, W)}")  # raise ValueError(f"Rain shape {field.shape} != domain shape {(H, W)}")

@@ -4,10 +4,53 @@
 # NOTE: Rain NetCDF inputs follow cdl/rain_time_dependent.cdl (CF-1.10).
 
 # Import numpy.
+from dataclasses import dataclass
+from typing import Any, Optional
+
 import numpy as np  # import numpy as np
 
 # Import optional backend helpers.
-from .compute_backend import get_array_module, to_device, to_numpy  # import .compute_backend import get_array_module, to_device, to_numpy
+from .compute_backend import (
+    get_array_module,
+    normalize_device,
+    to_device,
+    to_numpy,
+)  # import .compute_backend import get_array_module, normalize_device, to_device, to_numpy
+
+
+@dataclass
+class CurveNumberParams:
+    """Precomputed, reusable parameters for the SCS-CN runoff model."""
+
+    valid_mask: Any
+    S: Any
+    Ia: Any
+    device: str
+    dtype: Any
+
+
+def precompute_scs_cn_params(
+    CN: np.ndarray,
+    ia_ratio: float,
+    device: Optional[str] = None,
+) -> CurveNumberParams:
+    """Return precomputed CN-derived fields (S, Ia, mask) for reuse across steps."""
+
+    xp = get_array_module(device)
+    dev = normalize_device(device)
+    inputs_float32 = getattr(CN, "dtype", None) == np.float32
+    target_dtype = xp.float32 if inputs_float32 else xp.float64
+
+    CNv = to_device(CN, xp).astype(target_dtype, copy=False)
+    valid_mask = (CNv > 0.0) & (CNv <= 100.0) & xp.isfinite(CNv)
+
+    S = xp.zeros_like(CNv, dtype=target_dtype)
+    if bool(xp.any(valid_mask)):
+        S[valid_mask] = (25400.0 / CNv[valid_mask]) - 254.0
+
+    Ia = ia_ratio * S
+
+    return CurveNumberParams(valid_mask=valid_mask, S=S, Ia=Ia, device=dev, dtype=target_dtype)
 
 
 def scs_cn_cumulative_runoff_mm(  # define function scs_cn_cumulative_runoff_mm
@@ -15,6 +58,7 @@ def scs_cn_cumulative_runoff_mm(  # define function scs_cn_cumulative_runoff_mm
     CN: np.ndarray,  # execute statement
     ia_ratio: float,  # execute statement
     device: str | None = None,  # execute statement
+    params: CurveNumberParams | None = None,
 ) -> np.ndarray:  # execute statement
     """Compute cumulative runoff Q (mm) from cumulative precipitation P (mm) using SCS-CN.
 
@@ -30,35 +74,42 @@ def scs_cn_cumulative_runoff_mm(  # define function scs_cn_cumulative_runoff_mm
     -----
     CN must be in (0,100]. Invalid CN yields Q=0.
     """
-    # Choose backend and dtype (float32 to reduce memory when inputs are float32).
-    xp = get_array_module(device)  # set xp
-    inputs_float32 = getattr(P_cum_mm, "dtype", None) == np.float32 and getattr(CN, "dtype", None) == np.float32
-    target_dtype = xp.float32 if inputs_float32 else xp.float64
+    dev = normalize_device(params.device if params is not None else device)
+    xp = get_array_module(dev)
+
+    if params is not None:
+        if normalize_device(params.device) != dev:
+            raise ValueError("precomputed CN parameters must be built for the requested device")
+        S = params.S
+        Ia = params.Ia
+        valid_mask = params.valid_mask
+        target_dtype = params.dtype
+        if S.shape != P_cum_mm.shape:
+            raise ValueError("precomputed CN parameters shape must match precipitation slab shape")
+    else:
+        inputs_float32 = getattr(P_cum_mm, "dtype", None) == np.float32 and getattr(CN, "dtype", None) == np.float32
+        target_dtype = xp.float32 if inputs_float32 else xp.float64
+        CNv = to_device(CN, xp).astype(target_dtype, copy=False)
+        valid_mask = (CNv > 0.0) & (CNv <= 100.0) & xp.isfinite(CNv)
+        S = xp.zeros_like(CNv, dtype=target_dtype)
+        if bool(xp.any(valid_mask)):
+            S[valid_mask] = (25400.0 / CNv[valid_mask]) - 254.0
+        Ia = ia_ratio * S
 
     # Ensure float arrays.
     P = to_device(P_cum_mm, xp).astype(target_dtype, copy=False)  # set P
-    CNv = to_device(CN, xp).astype(target_dtype, copy=False)  # set CNv
 
     # Initialize runoff to zero.
     Q = xp.zeros_like(P, dtype=target_dtype)  # set Q
 
-    # Mask valid cells.
-    ok = (CNv > 0.0) & (CNv <= 100.0) & xp.isfinite(CNv) & xp.isfinite(P)  # set ok
-    if not bool(xp.any(ok)):  # check condition not bool(xp.any(ok)):
-        return to_numpy(Q)  # return to_numpy(Q)
+    ok = valid_mask & xp.isfinite(P)
+    if not bool(xp.any(ok)):
+        return to_numpy(Q)
 
-    # Potential retention S.
-    S = xp.zeros_like(P, dtype=target_dtype)  # set S
-    S[ok] = (25400.0 / CNv[ok]) - 254.0  # execute statement
-
-    # Initial abstraction.
-    Ia = ia_ratio * S  # set Ia
-
-    # Condition for runoff.
-    cond = ok & (P > Ia) & (S > 0.0)  # set cond
-    if bool(xp.any(cond)):  # check condition bool(xp.any(cond)):
-        num = (P[cond] - Ia[cond]) ** 2  # set num
-        den = (P[cond] - Ia[cond] + S[cond])  # set den
-        Q[cond] = num / den  # execute statement
+    cond = ok & (P > Ia) & (S > 0.0)
+    if bool(xp.any(cond)):
+        num = (P[cond] - Ia[cond]) ** 2
+        den = (P[cond] - Ia[cond] + S[cond])
+        Q[cond] = num / den
 
     return to_numpy(Q)  # return to_numpy(Q)

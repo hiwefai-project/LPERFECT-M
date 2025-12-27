@@ -26,7 +26,7 @@ import json  # import json
 from .time_utils import datetime_to_hours_since_1900, parse_iso8601_to_datetime64, parse_iso8601_to_utc_datetime  # import .time_utils import datetime_to_hours_since_1900, parse_iso8601_to_datetime64, parse_iso8601_to_utc_datetime
 from .d8 import build_downstream_index  # import .d8 import build_downstream_index
 from .rain import build_rain_sources, blended_rain_step_mm_rank0  # import .rain import build_rain_sources, blended_rain_step_mm_rank0
-from .runoff import scs_cn_cumulative_runoff_mm  # import .runoff import scs_cn_cumulative_runoff_mm
+from .runoff import precompute_scs_cn_params, scs_cn_cumulative_runoff_mm  # import .runoff import precompute_scs_cn_params, scs_cn_cumulative_runoff_mm
 from .compute_backend import gpu_available, normalize_device  # import .compute_backend import gpu_available, normalize_device
 from .hydraulics import spawn_particles_from_runoff_slab, advect_particles_one_step, local_volgrid_from_particles_slab  # import .hydraulics import spawn_particles_from_runoff_slab, advect_particles_one_step, local_volgrid_from_particles_slab
 from .particles import Particles, empty_particles, concat_particles  # import .particles import Particles, empty_particles, concat_particles
@@ -263,6 +263,9 @@ def run_simulation(
 
     if rank == 0:
         logger.debug("State arrays initialized with dtype P=%s Q=%s", P_slab.dtype, Q_slab.dtype)
+
+    CN_slab = dom.cn[r0:r1, :]
+    cn_params = precompute_scs_cn_params(CN_slab, ia_ratio=ia_ratio, device=device)
 
     # ------------------------------
     # Output helpers and bookkeeping
@@ -625,9 +628,14 @@ def run_simulation(
         P_slab = P_slab + rain_slab_mm  # set P_slab
 
         # Compute cumulative runoff with CN and incremental runoff for this step.
-        CN_slab = dom.cn[r0:r1, :]  # set CN_slab
         runoff_t0 = perf_counter()
-        Q_cum_slab_full = scs_cn_cumulative_runoff_mm(P_slab, CN_slab, ia_ratio=ia_ratio, device=device)  # set Q_cum_slab
+        Q_cum_slab_full = scs_cn_cumulative_runoff_mm(
+            P_slab,
+            CN_slab,
+            ia_ratio=ia_ratio,
+            device=device,
+            params=cn_params,
+        )  # set Q_cum_slab
         Q_cum_slab = Q_cum_slab_full.astype(np.float32)  # set Q_cum_slab
         dQ_mm = np.maximum(Q_cum_slab - Q_slab, 0.0)  # set dQ_mm
         Q_slab = Q_cum_slab  # set Q_slab

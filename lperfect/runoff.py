@@ -59,6 +59,7 @@ def scs_cn_cumulative_runoff_mm(  # define function scs_cn_cumulative_runoff_mm
     ia_ratio: float,  # execute statement
     device: str | None = None,  # execute statement
     params: CurveNumberParams | None = None,
+    workspace: np.ndarray | None = None,
 ) -> np.ndarray:  # execute statement
     """Compute cumulative runoff Q (mm) from cumulative precipitation P (mm) using SCS-CN.
 
@@ -73,6 +74,7 @@ def scs_cn_cumulative_runoff_mm(  # define function scs_cn_cumulative_runoff_mm
     Notes
     -----
     CN must be in (0,100]. Invalid CN yields Q=0.
+    `workspace` allows reuse of a preallocated array for temporary storage.
     """
     dev = normalize_device(params.device if params is not None else device)
     xp = get_array_module(dev)

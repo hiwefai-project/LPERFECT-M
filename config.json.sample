@@ -99,6 +99,17 @@
   },
   "compute": {
     "device": "cpu",
+    "mpi": {
+      "enabled": null,
+      "decomposition": "auto",
+      "min_rows_per_rank": 1,
+      "balance": {
+        "every_steps": 0,
+        "every_sim_s": 0,
+        "auto": false,
+        "imbalance_threshold": 2.0
+      }
+    },
     "shared_memory": {
       "enabled": null,
       "workers": null,

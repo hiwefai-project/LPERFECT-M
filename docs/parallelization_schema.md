@@ -7,15 +7,18 @@ processes, uses shared-memory threads within each rank, and how GPU acceleration
 
 ## 1. Distributed-Memory Parallelism (MPI)
 
-LPERFECT-M uses **row-slab domain decomposition** for MPI execution.
-Each rank owns a contiguous block of grid rows and performs all particle updates that
-occur within its slab.
+LPERFECT-M uses **load-balanced row-slab domain decomposition** for MPI execution.
+Each rank owns a contiguous block of grid rows sized by active-cell weights (to keep slabs
+equally busy) and performs all particle updates that occur within its slab. If MPI is available
+but explicitly disabled, only rank 0 runs while other launched ranks exit immediately.
 
 ### 1.1 Domain Ownership
 
-- The global grid is split by **rows** into `N` slabs.
+- The global grid is split by **rows** into `N` slabs, weighted by the number of active cells per row.
 - Rank `r` owns rows `[row_start_r, row_end_r]` and all variables restricted to that slab.
 - Particles are **owned by the rank that owns their current row**.
+- Guardrails: `compute.mpi.min_rows_per_rank` avoids tiny slabs; set `compute.mpi.decomposition` to
+  `balanced` (default) or `even` to force uniform slabs.
 
 ### 1.2 Particle Migration
 
@@ -31,9 +34,17 @@ This approach keeps communication localized and avoids global all-to-all exchang
 ### 1.3 I/O Strategy
 
 - **Rank 0** performs all NetCDF input and output.
-- Input fields are read on rank 0 and **scattered** to other ranks.
+- Input fields (restart, domain, and per-step rainfall) are read on rank 0 and **scattered** to other ranks,
+  avoiding whole-grid broadcasts every timestep.
 - Output fields are gathered to rank 0 and written to disk.
 - Restart files follow the same pattern (rank 0 writes, rank 0 reads and redistributes).
+
+### 1.4 Independent switches
+
+- Toggle MPI on/off with `compute.mpi.enabled = true|false|null` or the CLI `--mpi-mode enabled|disabled|auto`.
+- Select decomposition with `compute.mpi.decomposition = balanced|even` or `--mpi-decomposition`.
+- Control slab granularity via `compute.mpi.min_rows_per_rank` or `--mpi-min-rows`. Ranks are automatically pruned when the active rows cannot meet this constraint, keeping only the leading ranks needed for the domain.
+- Periodic/automatic rebalancing: `compute.mpi.balance.every_steps` or `every_sim_s` forces a resplit that accounts for current particle density; `compute.mpi.balance.auto` rebalances when the max/min particle ratio exceeds `imbalance_threshold`.
 
 ---
 
@@ -103,6 +114,7 @@ mpirun -np 4 python main.py --config config.json --device gpu
 - **Shared-memory threads** speed up particle advection and slab accumulation within each rank.
 - **GPU** acceleration (via CuPy) speeds up runoff calculations within each rank.
 - **I/O** is centralized on rank 0 for simplicity and CF-compliant NetCDF outputs.
+- Each layer (MPI, threads, GPU) is independently switchable; you can run GPU-only, threads-only, MPI-only, or any combination.
 
 ---
 

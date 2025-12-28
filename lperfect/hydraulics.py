@@ -262,26 +262,36 @@ def local_volgrid_from_particles_slab(p: Particles, r0: int, r1: int, ncols: int
 
     # Optionally parallelize accumulation for large particle counts.
     if should_parallelize(int(np.count_nonzero(m)), shared_cfg):  # check condition should_parallelize(int(np.count_nonzero(m)), shared_cfg):
-        from concurrent.futures import ThreadPoolExecutor  # import concurrent.futures import ThreadPoolExecutor
+        from concurrent.futures import ThreadPoolExecutor, as_completed  # import concurrent.futures import ThreadPoolExecutor, as_completed
 
         rr_all = p.r[m] - r0  # set rr_all
         cc_all = p.c[m]  # set cc_all
-        vol_all = p.vol[m]  # set vol_all
+        vol_all = p.vol[m].astype(np.float32, copy=False)  # set vol_all
         chunks = list(chunk_bounds(rr_all.size, shared_cfg.chunk_size))  # set chunks
 
-        def _partial(start: int, end: int) -> np.ndarray:
-            vg = np.zeros_like(volgrid)  # set vg
+        def _partial(start: int, end: int) -> tuple[int, np.ndarray] | None:
+            """Accumulate a chunk onto a minimal row window to save memory."""  # execute statement
             rr = rr_all[start:end]  # set rr
             cc = cc_all[start:end]  # set cc
-            np.add.at(vg, (rr, cc), vol_all[start:end])  # execute statement
-            return vg  # return vg
+            vols = vol_all[start:end]  # set vols
+            if rr.size == 0:  # check condition rr.size == 0:
+                return None  # return None
+            rmin = int(rr.min())  # set rmin
+            rmax = int(rr.max())  # set rmax
+            vg_local = np.zeros((rmax - rmin + 1, ncols), dtype=np.float32)  # set vg_local
+            np.add.at(vg_local, (rr - rmin, cc), vols)  # execute statement
+            return rmin, vg_local  # return rmin, vg_local
 
-        partials = []
-        with ThreadPoolExecutor(max_workers=shared_cfg.workers) as ex:
-            futures = [ex.submit(_partial, s, e) for s, e in chunks]
-            for fut in futures:
-                partials.append(fut.result())
-        volgrid = np.sum(partials, axis=0, dtype=np.float32)  # set volgrid
+        # Accumulate each partial result immediately to avoid holding many slabs in memory.
+        with ThreadPoolExecutor(max_workers=shared_cfg.workers) as ex:  # manage context ThreadPoolExecutor(max_workers=shared_cfg.workers) as ex:
+            futures = [ex.submit(_partial, s, e) for s, e in chunks]  # set futures
+            for fut in as_completed(futures):  # loop over fut in as_completed(futures):
+                res = fut.result()  # set res
+                if res is None:  # check condition res is None:
+                    continue  # execute statement
+                rstart, vg_local = res  # set rstart, vg_local
+                rstop = rstart + vg_local.shape[0]  # set rstop
+                volgrid[rstart:rstop, :] += vg_local  # execute statement
         return volgrid  # return volgrid
 
     rr = p.r[m] - r0  # set rr

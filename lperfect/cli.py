@@ -22,6 +22,24 @@ def parse_args() -> argparse.Namespace:  # define function parse_args
     ap.add_argument("--outflow-geojson", default=None, help="GeoJSON path for outflow impact points.")  # execute statement
     ap.add_argument("--device", default=None, choices=["cpu", "gpu"], help="Compute device override.")  # execute statement
     ap.add_argument(
+        "--mpi-mode",
+        default=None,
+        choices=["auto", "enabled", "disabled"],
+        help="Force MPI on/off or auto-detect based on launcher.",
+    )  # execute statement
+    ap.add_argument(
+        "--mpi-decomposition",
+        default=None,
+        choices=["auto", "balanced", "even"],
+        help="MPI domain decomposition strategy (balanced=active-cell weighted slabs).",
+    )  # execute statement
+    ap.add_argument(
+        "--mpi-min-rows",
+        default=None,
+        type=int,
+        help="Minimum number of rows per MPI rank (prevents tiny slabs).",
+    )  # execute statement
+    ap.add_argument(
         "--travel-time-mode",
         default=None,
         choices=["fixed", "auto"],

@@ -109,6 +109,17 @@ def default_config() -> Dict[str, Any]:  # define function default_config
         },  # execute statement
         "compute": {  # execute statement
             "device": "cpu",  # execute statement
+            "mpi": {  # execute statement
+                "enabled": None,  # auto-enable only when launched under MPI  # execute statement
+                "decomposition": "auto",  # execute statement
+                "min_rows_per_rank": 1,  # execute statement
+                "balance": {  # execute statement
+                    "every_steps": 0,  # force rebalance after N steps (0=disabled)  # execute statement
+                    "every_sim_s": 0,  # force rebalance after N simulated seconds (0=disabled)  # execute statement
+                    "auto": False,  # enable heuristic auto-balance  # execute statement
+                    "imbalance_threshold": 2.0,  # trigger auto when max/min particles exceeds this ratio  # execute statement
+                },  # execute statement
+            },  # execute statement
             "shared_memory": {  # execute statement
                 "enabled": None,  # execute statement
                 "workers": None,  # execute statement

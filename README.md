@@ -79,6 +79,18 @@ python main.py --config config.json --travel-time-mode auto
 python main.py --config config.json --outflow-geojson out/outflow_hits.geojson
 ```
 
+### Parallelization switches (mix-and-match)
+- **MPI distributed memory**: `compute.mpi.enabled` = `true|false|null(auto)`, `compute.mpi.decomposition` = `auto|balanced|even`, `compute.mpi.min_rows_per_rank` to avoid tiny slabs. Ranks are pruned automatically when the active rows cannot satisfy the minimum-per-rank constraint. CLI overrides: `--mpi-mode`, `--mpi-decomposition`, `--mpi-min-rows`.
+- **MPI load balancing**: `compute.mpi.balance.every_steps` / `every_sim_s` force a particle-aware rebalance on a fixed cadence; `compute.mpi.balance.auto` triggers when the max/min particle count ratio across ranks exceeds `imbalance_threshold`.
+- **Shared memory threads (per rank)**: `compute.shared_memory.enabled/workers/min_particles_per_worker/chunk_size`.
+- **GPU**: `compute.device = "gpu"` (per rank) or override with `--device gpu`.
+
+Examples:
+- Serial + GPU only: `--mpi-mode disabled --device gpu`.
+- MPI-only: `--mpi-mode enabled --mpi-decomposition balanced`.
+- MPI + threads: set `compute.shared_memory.enabled=true` with `mpirun ...`.
+- Full heterogeneous: `mpirun -np 8 python main.py --config cfg.json --device gpu --mpi-decomposition balanced`.
+
 Output cadence:
 - `output.save_every_s`: append a new time slice to the configured NetCDF every N simulated seconds (e.g., `3600` for hourly snapshots).
 - `output.rotate_every_s`: write a new NetCDF every N simulated seconds, using the `output.out_netcdf` basename with `_0000.nc`, `_0001.nc`, ... suffixes.
@@ -138,9 +150,10 @@ Particles hop along D8 with travel-time gating; travel times can be fixed scalar
 
 ### Parallelization
 MPI mode uses:
-- **slab decomposition** (contiguous row blocks per rank)
+- **load-balanced slab decomposition** (contiguous row blocks per rank, weighted by active cells; falls back to even slabs)
 - **particle migration** via `Alltoallv` after advection
 - **optional shared-memory threads** per rank to accelerate particle advection and slab accumulation (independent of GPU/MPI)
+- **rank-aware MPI enable/disable switches** so GPU-only or threads-only runs remain serial even when `mpirun` is used
 - **rank0-only I/O** (domain read, rain read, restart+output writes)
 
 ## Restart usage

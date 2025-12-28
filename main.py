@@ -119,7 +119,7 @@ def main() -> None:
     from lperfect.logging_utils import setup_logging
 
     # Import MPI utilities.
-    from lperfect.mpi_utils import get_comm
+    from lperfect.mpi_utils import HAVE_MPI, MPI, MPIConfig, initialize_mpi
 
     # Import domain I/O.
     from lperfect.domain import read_domain_netcdf_rank0, bcast_domain
@@ -129,19 +129,9 @@ def main() -> None:
 
     # Import rain cache close.
     from lperfect.rain import xr_close_cache
-    # Import shared-memory config helper.
-    from lperfect.shared_memory import SharedMemoryConfig
-    # Initialize MPI or fall back to a serial communicator.
-    comm, rank, size = get_comm()
 
     # Parse command-line arguments into a structured namespace.
     args = parse_args()
-
-    # Configure logging (include rank so MPI logs are distinguishable).
-    setup_logging(args.log_level, rank)
-
-    # Create a named logger for this application.
-    logger = logging.getLogger("lperfect")
 
     # Load the built-in default configuration dictionary.
     cfg = default_config()
@@ -165,6 +155,19 @@ def main() -> None:
     if args.device is not None:
         # Override the compute device (e.g., "cpu" or "cuda").
         cfg.setdefault("compute", {})["device"] = args.device
+    # MPI overrides (independent from how the launcher was invoked).
+    mpi_cfg_overrides = cfg.setdefault("compute", {}).setdefault("mpi", {})
+    if args.mpi_mode is not None:
+        if args.mpi_mode == "enabled":
+            mpi_cfg_overrides["enabled"] = True
+        elif args.mpi_mode == "disabled":
+            mpi_cfg_overrides["enabled"] = False
+        else:
+            mpi_cfg_overrides["enabled"] = None
+    if args.mpi_decomposition is not None:
+        mpi_cfg_overrides["decomposition"] = args.mpi_decomposition
+    if args.mpi_min_rows is not None:
+        mpi_cfg_overrides["min_rows_per_rank"] = args.mpi_min_rows
     if args.travel_time_mode is not None:
         cfg["model"]["travel_time_mode"] = args.travel_time_mode
     if args.travel_time_hill_vel is not None:
@@ -180,6 +183,26 @@ def main() -> None:
         metrics_cfg["enabled"] = True
     if args.parallel_metrics_output is not None:
         metrics_cfg["output"] = args.parallel_metrics_output
+
+    # Resolve MPI preferences and initialize communicator after config parsing.
+    world_size_guess = MPI.COMM_WORLD.Get_size() if HAVE_MPI else 1
+    mpi_cfg = MPIConfig.from_dict(cfg.get("compute", {}).get("mpi", {}), world_size=world_size_guess)
+    # Persist resolved MPI preferences back into the config for downstream visibility.
+    cfg.setdefault("compute", {})["mpi"] = {
+        "enabled": mpi_cfg.enabled,
+        "decomposition": mpi_cfg.decomposition,
+        "min_rows_per_rank": mpi_cfg.min_rows_per_rank,
+    }
+    comm, rank, size, mpi_world_size, mpi_active = initialize_mpi(mpi_cfg)
+
+    # Configure logging (include rank so MPI logs are distinguishable).
+    setup_logging(args.log_level, rank)
+    logger = logging.getLogger("lperfect")
+    if rank == 0 and not mpi_active and mpi_world_size > 1:
+        logger.info(
+            "MPI explicitly disabled in configuration; running serial on rank0 (world_size=%d).",
+            mpi_world_size,
+        )
 
     # Normalize domains (support single domain object or list under cfg['domains']).
     default_domain_cfg = cfg.get("domain", {})
@@ -219,7 +242,7 @@ def main() -> None:
             )
 
         # Run the main simulation driver with the loaded configuration and domain.
-        run_simulation(comm, rank, size, run_cfg, dom, domain_label=domain_label)
+        run_simulation(comm, rank, size, run_cfg, dom, domain_label=domain_label, mpi_world_size=mpi_world_size)
 
         # Close cached NetCDF rain datasets to free resources between domains.
         xr_close_cache()

@@ -38,13 +38,16 @@ from .shared_memory import SharedMemoryConfig  # import .shared_memory import Sh
 from .mpi_utils import (  # import .mpi_utils import (
     HAVE_MPI,  # execute statement
     MPI,  # execute statement
-    slab_bounds,  # execute statement
-    scatter_field_slab,  # execute statement
-    gather_field_slab_to_rank0,  # execute statement
+    MPIConfig,  # execute statement
+    PartitionPlan,  # execute statement
+    build_partition_from_active,  # execute statement
+    build_partition_from_weights,  # execute statement
+    scatter_field_partition,  # execute statement
+    gather_field_partition_to_rank0,  # execute statement
     gather_particles_to_rank0,  # execute statement
     scatter_particles_from_rank0,  # execute statement
-    migrate_particles_slab,  # execute statement
-    rank_of_row,  # execute statement
+    migrate_particles_partition,  # execute statement
+    rank_of_row_partition,  # execute statement
 )  # execute statement
 
 # Import Domain class.
@@ -55,7 +58,13 @@ logger = logging.getLogger("lperfect")  # set logger
 
 
 def run_simulation(
-    comm: Any, rank: int, size: int, cfg: Dict[str, Any], dom: Domain, domain_label: str | None = None
+    comm: Any,
+    rank: int,
+    size: int,
+    cfg: Dict[str, Any],
+    dom: Domain,
+    domain_label: str | None = None,
+    mpi_world_size: int | None = None,
 ) -> None:  # define function run_simulation
     """Run the full LPERFECT simulation (serial or MPI)."""  # execute statement
 
@@ -78,12 +87,43 @@ def run_simulation(
     # Resolve compute device.
     compute_cfg = cfg.get("compute", {})  # set compute_cfg
     device = normalize_device(compute_cfg.get("device", "cpu"))  # set device
+    world_size = int(mpi_world_size) if mpi_world_size is not None else int(size)
+    mpi_cfg = MPIConfig.from_dict(compute_cfg.get("mpi", {}), world_size=world_size)
+    mpi_active = mpi_cfg.enabled and size > 1 and comm is not None
     if device == "gpu" and not gpu_available():  # check condition device == "gpu" and not gpu_available():
         if rank == 0:  # check condition rank == 0:
             logger.warning("GPU requested but CuPy not available; falling back to CPU.")  # execute statement
         device = "cpu"  # set device
+    # Domain shape.
+    nrows, ncols = dom.dem.shape  # set nrows, ncols
+
+    # Optionally prune ranks when slabs would be empty or violate min_rows_per_rank.
+    active_rows = int(np.count_nonzero(np.any(dom.active_mask, axis=1)))
+    target_size = size
+    if mpi_active and comm is not None:
+        max_ranks_by_rows = max(1, active_rows // max(1, mpi_cfg.min_rows_per_rank))
+        target_size = max(1, min(size, max_ranks_by_rows))
+        if target_size < size:
+            color = 0 if rank < target_size else MPI.UNDEFINED
+            new_comm = comm.Split(color=color, key=rank)
+            if new_comm == MPI.COMM_NULL:
+                return
+            comm = new_comm
+            rank = comm.Get_rank()
+            size = comm.Get_size()
+    mpi_active = mpi_cfg.enabled and size > 1 and comm is not None
+
     if rank == 0:  # check condition rank == 0:
         logger.info("Compute device: %s", device)  # execute statement
+        logger.info(
+            "Distributed memory: %s (active ranks=%d, world_size=%d, decomposition=%s, min_rows_per_rank=%d, active_rows=%d)",
+            "enabled" if mpi_active else "disabled",
+            size if mpi_active else 1,
+            world_size,
+            mpi_cfg.decomposition,
+            mpi_cfg.min_rows_per_rank,
+            active_rows,
+        )
     shared_cfg = SharedMemoryConfig.from_dict(compute_cfg.get("shared_memory", {}))  # set shared_cfg
     if rank == 0 and shared_cfg.enabled and shared_cfg.workers > 1:  # check condition rank == 0 and shared_cfg.enabled and shared_cfg.workers > 1:
         logger.info(
@@ -98,16 +138,113 @@ def run_simulation(
     metrics_enabled = bool(metrics_cfg.get("enabled", False))
     metrics_output = metrics_cfg.get("output", None)
     metrics_max_samples = int(metrics_cfg.get("max_samples", 256) or 0)
+    balance_cfg = compute_cfg.get("mpi", {}).get("balance", {}) if isinstance(compute_cfg.get("mpi", {}), dict) else {}
+    balance_every_steps = int(balance_cfg.get("every_steps", 0) or 0)
+    balance_every_sim_s = float(balance_cfg.get("every_sim_s", 0.0) or 0.0)
+    balance_auto = bool(balance_cfg.get("auto", False))
+    balance_threshold = float(balance_cfg.get("imbalance_threshold", 2.0) or 2.0)
+    next_balance_time: float | None = balance_every_sim_s if balance_every_sim_s > 0.0 else None
 
     # Start time for time-aware rain selection and output timestamps.
     start_time = parse_iso8601_to_datetime64(mcfg.get("start_time", None))  # set start_time
     start_datetime = parse_iso8601_to_utc_datetime(mcfg.get("start_time", None))  # set start_datetime
 
-    # Domain shape.
-    nrows, ncols = dom.dem.shape  # set nrows, ncols
-
     # Precompute downstream lookup (replicated).
     valid, ds_r, ds_c = build_downstream_index(dom.d8, encoding)  # set valid, ds_r, ds_c
+
+    # Build a rank-aware partition plan (contiguous row slabs, load-balanced by active cells).
+    partition: PartitionPlan = build_partition_from_active(
+        active_mask=dom.active_mask,
+        size=max(1, size),
+        strategy=mpi_cfg.decomposition,
+        min_rows_per_rank=mpi_cfg.min_rows_per_rank,
+    )
+    r0, r1 = partition.bounds(rank if size > 1 else 0)
+
+    def _rebalance_particles(reason: str, step_idx: int, step_time_s: float) -> None:
+        """Gather state, rebuild slabs with particle-aware weights, and resplit."""
+        nonlocal partition, P_slab, Q_slab, particles, r0, r1, CN_slab, next_balance_time
+        if not mpi_active or comm is None:
+            return
+
+        # Log current distribution.
+        local_count = int(particles.r.size)
+        counts_by_rank = comm.allgather(local_count)
+        if rank == 0:
+            logger.info(
+                "MPI load-balance (%s) at step=%d time=%.1fs: particle_counts=%s",
+                reason,
+                step_idx + 1,
+                step_time_s,
+                counts_by_rank,
+            )
+
+        # Gather slabs and particles to rank0.
+        P_full = gather_field_partition_to_rank0(comm, partition, P_slab, nrows, ncols)
+        Q_full = gather_field_partition_to_rank0(comm, partition, Q_slab, nrows, ncols)
+        particles_all = gather_particles_to_rank0(comm, particles)
+
+        # Build a new partition weighted by active cells and current particle density.
+        if rank == 0:
+            particle_row_counts = (
+                np.bincount(particles_all.r.astype(np.int32), minlength=nrows) if particles_all.r.size > 0 else np.zeros(nrows, dtype=np.int64)
+            )
+            active_weights = np.sum(dom.active_mask.astype(np.int32), axis=1).astype(np.int64)
+            row_weights = active_weights + particle_row_counts
+            row_weights = np.where(row_weights <= 0, 1, row_weights)
+            new_plan = build_partition_from_weights(
+                row_weights=row_weights,
+                size=max(1, size),
+                strategy=mpi_cfg.decomposition,
+                min_rows_per_rank=mpi_cfg.min_rows_per_rank,
+            )
+            counts = new_plan.counts
+            starts = new_plan.starts
+        else:
+            counts = None
+            starts = None
+
+        counts = comm.bcast(counts, root=0)
+        starts = comm.bcast(starts, root=0)
+        partition = PartitionPlan(counts=np.asarray(counts, dtype=np.int32), starts=np.asarray(starts, dtype=np.int32))
+
+        # Scatter to the refreshed layout.
+        P_slab = scatter_field_partition(comm, partition, P_full, nrows, ncols, np.float32)
+        Q_slab = scatter_field_partition(comm, partition, Q_full, nrows, ncols, np.float32)
+        particles = scatter_particles_from_rank0(comm, partition, particles_all)
+        r0, r1 = partition.bounds(rank if size > 1 else 0)
+        CN_slab = dom.cn[r0:r1, :]
+
+    def _maybe_rebalance(step_idx: int, step_time_s: float) -> None:
+        """Trigger periodic or automatic particle-aware rebalancing."""
+        nonlocal next_balance_time
+        if not mpi_active or comm is None:
+            return
+
+        trigger = False
+        reason = ""
+
+        if balance_every_steps > 0 and ((step_idx + 1) % balance_every_steps == 0):
+            trigger = True
+            reason = "interval_steps"
+
+        if balance_every_sim_s > 0.0 and next_balance_time is not None and (step_time_s + 1e-9) >= next_balance_time:
+            trigger = True
+            reason = reason or "interval_time"
+            while next_balance_time is not None and (step_time_s + 1e-9) >= next_balance_time:
+                next_balance_time += balance_every_sim_s
+
+        if balance_auto:
+            local_count = int(particles.r.size)
+            counts_by_rank = comm.allgather(local_count)
+            max_c = max(counts_by_rank) if counts_by_rank else 0
+            min_c = min(counts_by_rank) if counts_by_rank else 0
+            if max_c > 0 and (min_c == 0 or (max_c / max(1, min_c)) >= balance_threshold):
+                trigger = True
+                reason = reason or "auto_imbalance"
+
+        if trigger:
+            _rebalance_particles(reason or "manual", step_idx, step_time_s)
 
     def _compute_hop_distances(cell_area_m2: float | np.ndarray) -> np.ndarray:
         """Approximate hop distances (m) using cell area and downstream orientation."""
@@ -252,14 +389,11 @@ def run_simulation(
         cum_rain, cum_runoff, cum_outflow, elapsed_s0 = map(float, scal.tolist())  # set cum_rain, cum_runoff, cum_outflow, elapsed_s0
 
         # Scatter slab fields.
-        P_slab = scatter_field_slab(comm, P_full, nrows, ncols, np.float32)  # set P_slab
-        Q_slab = scatter_field_slab(comm, Q_full, nrows, ncols, np.float32)  # set Q_slab
+        P_slab = scatter_field_partition(comm, partition, P_full, nrows, ncols, np.float32)  # set P_slab
+        Q_slab = scatter_field_partition(comm, partition, Q_full, nrows, ncols, np.float32)  # set Q_slab
 
         # Scatter particles by row ownership.
-        particles = scatter_particles_from_rank0(comm, particles_all, nrows=nrows)  # set particles
-
-        # Local slab bounds.
-        r0, r1 = slab_bounds(nrows, size, rank)  # set r0, r1
+        particles = scatter_particles_from_rank0(comm, partition, particles_all)  # set particles
 
     if rank == 0:
         logger.debug("State arrays initialized with dtype P=%s Q=%s", P_slab.dtype, Q_slab.dtype)
@@ -350,8 +484,8 @@ def run_simulation(
             return flood_depth, risk_field
 
         volgrid_slab = local_volgrid_from_particles_slab(particles, r0=r0, r1=r1, ncols=ncols, shared_cfg=shared_cfg)
-        vol_full = gather_field_slab_to_rank0(comm, volgrid_slab, nrows, ncols)
-        Q_full = gather_field_slab_to_rank0(comm, Q_slab, nrows, ncols)
+        vol_full = gather_field_partition_to_rank0(comm, partition, volgrid_slab, nrows, ncols)
+        Q_full = gather_field_partition_to_rank0(comm, partition, Q_slab, nrows, ncols)
         if rank == 0:
             flood_depth = _flood_from_volume(vol_full)
             risk_field = _compute_risk_field(Q_full, flood_depth)
@@ -596,9 +730,9 @@ def run_simulation(
         # Absolute timestamp (for rain selection) if configured.
         sim_time = (start_time + np.timedelta64(int(round(step_time_s)), "s")) if start_time is not None else None  # set sim_time
 
-        # Rank0 reads and blends rainfall, then broadcasts.
+        # Rank0 reads and blends rainfall, then scatters slabs.
         if rank == 0:  # check condition rank == 0:
-            rain_step_mm = blended_rain_step_mm_rank0(  # set rain_step_mm
+            rain_full = blended_rain_step_mm_rank0(  # set rain_step_mm
                 sources=rain_sources,  # set sources
                 shape=(nrows, ncols),  # set shape
                 dt_s=dt_s,  # set dt_s
@@ -606,15 +740,14 @@ def run_simulation(
                 sim_time=sim_time,  # set sim_time
             )  # execute statement
             # Force inactive cells to zero rainfall.
-            rain_step_mm = np.where(dom.active_mask, rain_step_mm, 0.0).astype(np.float32)  # set rain_step_mm
+            rain_full = np.where(dom.active_mask, rain_full, 0.0).astype(np.float32)  # set rain_step_mm
         else:  # fallback branch
-            rain_step_mm = np.empty((nrows, ncols), dtype=np.float32)  # set rain_step_mm
+            rain_full = None  # set rain_full
 
         if size > 1:  # check condition size > 1:
-            comm.Bcast(rain_step_mm, root=0)  # execute statement
-
-        # Slice rainfall to local slab.
-        rain_slab_mm = rain_step_mm[r0:r1, :].astype(np.float32)  # set rain_slab_mm
+            rain_slab_mm = scatter_field_partition(comm, partition, rain_full, nrows, ncols, np.float32)  # set rain_slab_mm
+        else:
+            rain_slab_mm = rain_full.astype(np.float32, copy=False)  # type: ignore[union-attr]
 
         # Compute rain volume injected this step (for diagnostics).
         if np.isscalar(dom.cell_area_m2):  # check condition np.isscalar(dom.cell_area_m2):
@@ -677,11 +810,11 @@ def run_simulation(
         if size > 1:  # check condition size > 1:
             if metrics_enabled:
                 active_particles_before_migration = int(comm.allreduce(active_particles_before_migration, op=MPI.SUM))
-                dest = rank_of_row(particles.r, nrows, size)
+                dest = rank_of_row_partition(particles.r, partition)
                 migrated_local = int(np.sum(dest != rank))
                 migrated_particles_global = int(comm.allreduce(migrated_local, op=MPI.SUM))
             mig_t0 = perf_counter()
-            particles = migrate_particles_slab(comm, particles, nrows=nrows)  # set particles
+            particles = migrate_particles_partition(comm, particles, plan=partition)  # set particles
             migration_t = perf_counter() - mig_t0
 
         # Compute current system volume (sum of particle volumes).
@@ -785,8 +918,8 @@ def run_simulation(
                     particles_all=particles,  # set particles_all
                 )  # execute statement
             else:  # fallback branch
-                P_full = gather_field_slab_to_rank0(comm, P_slab, nrows, ncols)  # set P_full
-                Q_full = gather_field_slab_to_rank0(comm, Q_slab, nrows, ncols)  # set Q_full
+                P_full = gather_field_partition_to_rank0(comm, partition, P_slab, nrows, ncols)  # set P_full
+                Q_full = gather_field_partition_to_rank0(comm, partition, Q_slab, nrows, ncols)  # set Q_full
                 particles_all = gather_particles_to_rank0(comm, particles)  # set particles_all
                 if rank == 0:  # check condition rank == 0:
                     save_restart_netcdf_rank0(  # execute statement
@@ -819,6 +952,9 @@ def run_simulation(
                 if _write_output(step_time_s):
                     output_written_any = True
                     output_written_on_final_step = True
+
+        # Optional load balancing of particles across ranks.
+        _maybe_rebalance(step_idx=k, step_time_s=step_time_s)
 
     # ------------------------------
     # Final output guard (in case no write happened yet)
@@ -899,6 +1035,14 @@ def run_simulation(
                     "domain": domain_label,
                     "shape_rc": [int(nrows), int(ncols)],
                     "ranks": int(size),
+                    "mpi": {
+                        "enabled": bool(mpi_active),
+                        "size": int(size),
+                        "world_size": int(world_size),
+                        "decomposition": mpi_cfg.decomposition,
+                        "min_rows_per_rank": int(mpi_cfg.min_rows_per_rank),
+                        "partition": partition.to_dict(),
+                    },
                     "shared_memory": {
                         "enabled": bool(shared_cfg.enabled),
                         "auto_enabled": bool(shared_cfg.auto_enabled),

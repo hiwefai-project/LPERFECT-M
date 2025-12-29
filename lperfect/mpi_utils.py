@@ -443,10 +443,13 @@ def scatter_particles_from_rank0(comm, plan: PartitionPlan, p_all: Optional[Part
 
 
 
-def rebalance_particles_even(comm, p_local: Particles) -> Particles:
+def rebalance_particles_even(comm, p_local: Optional[Particles]) -> Particles:
     """Evenly redistribute particles across ranks (count-balanced, location-agnostic)."""
     rank = comm.Get_rank()  # set rank
     size = comm.Get_size()  # set size
+
+    # Guard against None by normalizing to an empty container.
+    p_local = p_local if p_local is not None else empty_particles()  # ensure non-None local payload
 
     local_count = int(p_local.r.size)  # set local_count
     total_count = int(comm.allreduce(local_count, op=MPI.SUM))  # set total_count

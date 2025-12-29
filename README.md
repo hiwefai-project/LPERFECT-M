@@ -153,10 +153,11 @@ Particles hop along D8 with travel-time gating; travel times can be fixed scalar
 ### Parallelization
 MPI mode uses:
 - **load-balanced slab decomposition** (contiguous row blocks per rank, weighted by active cells; falls back to even slabs)
-- **particle migration** via `Alltoallv` after advection
+- **particle migration** via `Alltoallv` after advection (neighbor-only when possible, skipped entirely when no particles leave a slab)
 - **optional shared-memory threads** per rank to accelerate particle advection and slab accumulation (independent of GPU/MPI)
 - **rank-aware MPI enable/disable switches** so GPU-only or threads-only runs remain serial even when `mpirun` is used
 - **rank0-only I/O** (domain read, rain read, restart+output writes)
+- **particle-parallel spawn scatter**: when using the `particles` schema, new particles spawned on rank 0 are scattered evenly to all ranks every step without disturbing already-placed particles
 
 ## Restart usage
 

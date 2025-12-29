@@ -250,8 +250,8 @@ def alltoallv_float64(comm, sendbuf_by_rank: List[np.ndarray]) -> np.ndarray:  #
     return recvflat  # return recvflat
 
 
-def migrate_particles_partition(comm, particles: Particles, plan: PartitionPlan) -> Particles:
-    """Migrate particles between ranks based on a partition plan."""
+def migrate_particles_partition(comm, particles: Particles, plan: PartitionPlan) -> tuple[Particles, int]:
+    """Migrate particles between ranks based on a partition plan and return migrated count."""
     # Rank and size.
     rank = comm.Get_rank()  # set rank
     size = comm.Get_size()  # set size
@@ -265,6 +265,9 @@ def migrate_particles_partition(comm, particles: Particles, plan: PartitionPlan)
         vol=particles.vol[keep_mask],
         tau=particles.tau[keep_mask],
     )
+    migrated_local = int(np.count_nonzero(~keep_mask))  # count migrants for metrics
+    if migrated_local == 0:  # fast path when no particles cross slabs
+        return local, 0
     # Identify actual destinations to avoid all-to-all when only neighbors receive payloads.
     send_targets = [int(x) for x in np.unique(dest) if int(x) != rank and int(x) < size and plan.counts[int(x)] > 0]  # compute unique targets
 
@@ -326,7 +329,7 @@ def migrate_particles_partition(comm, particles: Particles, plan: PartitionPlan)
 
     # If nothing received, return local only.
     if recvflat.size == 0:
-        return local
+        return local, migrated_local
     # Sanity check: payload must be multiple of 4 floats.
     if recvflat.size % 4 != 0:
         raise RuntimeError("Received particle payload is not divisible by 4")
@@ -335,7 +338,7 @@ def migrate_particles_partition(comm, particles: Particles, plan: PartitionPlan)
     # Concatenate local and received.
     from .particles import concat_particles  # import .particles import concat_particles
 
-    return concat_particles(local, received)
+    return concat_particles(local, received), migrated_local
 
 
 def scatter_field_partition(
@@ -441,6 +444,41 @@ def scatter_particles_from_rank0(comm, plan: PartitionPlan, p_all: Optional[Part
         raise RuntimeError("Received particle payload not divisible by 4")
     return unpack_particles_from_float64(recvflat.reshape((-1, 4)))
 
+
+def scatter_new_particles_even(comm, new_particles: Optional[Particles]) -> Particles:
+    """Evenly scatter freshly spawned particles from rank0 without moving existing particles."""
+    rank = comm.Get_rank()  # set rank
+    size = comm.Get_size()  # set size
+    source = new_particles if (rank == 0 and new_particles is not None) else empty_particles()  # normalize payload
+    total_new = int(source.r.size)  # count new particles on rank0
+
+    total_new = int(comm.bcast(total_new, root=0))  # broadcast global spawn count
+    if total_new == 0:  # short-circuit when nothing to distribute
+        return empty_particles()
+
+    counts = np.full(size, total_new // size, dtype=np.int64)  # even split
+    counts[: (total_new % size)] += 1  # hand out remainders to early ranks
+
+    if rank == 0:
+        flat = pack_particles_to_float64(source).ravel()  # flatten payload
+        sendbuf_by_rank: list[np.ndarray] = []  # prepare per-destination buffers
+        offset = 0  # running offset in the flat payload
+        for c in counts:
+            nvals = int(c) * 4
+            if nvals > 0:
+                sendbuf_by_rank.append(flat[offset : offset + nvals])
+            else:
+                sendbuf_by_rank.append(np.zeros(0, dtype=np.float64))
+            offset += nvals
+    else:
+        sendbuf_by_rank = [np.zeros(0, dtype=np.float64) for _ in range(size)]  # send nothing from non-root ranks
+
+    recvflat = alltoallv_float64(comm, sendbuf_by_rank)  # exchange slices
+    if recvflat.size == 0:
+        return empty_particles()
+    if recvflat.size % 4 != 0:
+        raise RuntimeError("Even scatter payload not divisible by 4")
+    return unpack_particles_from_float64(recvflat.reshape((-1, 4)))
 
 
 def rebalance_particles_even(comm, p_local: Optional[Particles]) -> Particles:

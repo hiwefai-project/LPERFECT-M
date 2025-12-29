@@ -28,10 +28,10 @@ After each routing step:
 
 1. Particles are advanced along the D8 flow direction.
 2. Any particle that crosses a slab boundary is placed into a **send buffer**.
-3. Ranks exchange boundary-crossing particles with their neighbors.
+3. Ranks exchange boundary-crossing particles with their neighbors. When no particles leave a slab, the exchange is skipped entirely to avoid empty collectives.
 4. Received particles are merged into the local particle list.
 
-This approach keeps communication localized and avoids global all-to-all exchanges.
+This approach keeps communication localized and avoids global all-to-all exchanges; a neighbor-only path is used whenever all migrants target adjacent slabs.
 
 ### 1.3 I/O Strategy
 
@@ -54,7 +54,7 @@ This approach keeps communication localized and avoids global all-to-all exchang
 
 - Particles are evenly distributed across ranks (and rebalanced automatically when a rain source advances to a new time slice, plus any configured periodic rebalance).
 - Domain fields (`dem`, `d8`, `cn`, masks) remain replicated on all ranks for hydrological consistency.
-- Rainfall is read on rank 0, broadcast to all ranks, and new particles are spawned on rank 0 before even redistribution.
+- Rainfall is read on rank 0, broadcast to all ranks, and new particles are spawned on rank 0 before **per-step even redistribution** that scatters only the fresh particles (existing particles stay in place). This preserves balance without a full gather/rebroadcast cycle.
 - Advection, shared-memory threading, and GPU usage remain per rank; no slab-based migration is needed because ownership is particle-only.
 
 ---
@@ -146,6 +146,7 @@ Measurement notes:
 - Wall-clock timings come from the simulation log; mean values exclude startup/I/O. When using GPUs, only the runoff section benefits, so whole-step speedup will be lower than kernel-only speedup.
 - Particle throughput is derived from the `hops` counter divided by wall-clock runtime; it captures the combined effect of threading and vectorization within each rank.
 - Migration ratio is computed as `(migrated / total active particles) * 100` per step and helps identify decomposition changes before scaling to many nodes.
+- Slab-mode steps with zero migrants now skip Alltoall entirely, and particle-mode runs scatter only the newly spawned particles each step; both behaviors reduce synchronization noise when rain is sparse.
 - If `compute.shared_memory.enabled=true`, ensure `workers` matches the cores allocated by the launcher (e.g., `SLURM_CPUS_PER_TASK`) to reproduce the speedups above.
 
 ### Performance-tuned compute block (CPU, 4 MPI ranks)

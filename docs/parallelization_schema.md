@@ -52,7 +52,7 @@ This approach keeps communication localized and avoids global all-to-all exchang
 
 ### 1.5 Particle-Only Schema
 
-- Particles are evenly distributed across ranks (and rebalanced automatically each step when rain updates occur, plus any configured periodic rebalance).
+- Particles are evenly distributed across ranks (and rebalanced automatically when a rain source advances to a new time slice, plus any configured periodic rebalance).
 - Domain fields (`dem`, `d8`, `cn`, masks) remain replicated on all ranks for hydrological consistency.
 - Rainfall is read on rank 0, broadcast to all ranks, and new particles are spawned on rank 0 before even redistribution.
 - Advection, shared-memory threading, and GPU usage remain per rank; no slab-based migration is needed because ownership is particle-only.

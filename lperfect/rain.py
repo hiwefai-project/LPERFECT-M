@@ -196,12 +196,12 @@ def _format_time_value(val: Any) -> str:  # define function _format_time_value
     return str(val)  # return str(val)
 
 
-def _log_rain_time_usage(src: RainSource, time_vals: Optional[np.ndarray], idx: int) -> None:  # define function _log_rain_time_usage
-    """Log when a rain source advances to a new time index."""  # execute statement
+def _log_rain_time_usage(src: RainSource, time_vals: Optional[np.ndarray], idx: int) -> bool:  # define function _log_rain_time_usage
+    """Log when a rain source advances to a new time index and return whether it changed."""  # execute statement
     key = (src.name, src.path or src.var or src.kind)  # set key
     last_idx = _RAIN_TIME_LOG.get(key, None)  # set last_idx
     if last_idx == idx:  # check condition last_idx == idx:
-        return  # return None
+        return False  # return False when no change
 
     time_label = None  # set time_label
     if time_vals is not None:  # check condition time_vals is not None:
@@ -216,6 +216,7 @@ def _log_rain_time_usage(src: RainSource, time_vals: Optional[np.ndarray], idx: 
         idx,  # execute statement
     )  # execute statement
     _RAIN_TIME_LOG[key] = idx  # execute statement
+    return True  # return True when the time index changed
 
 
 def _preload_rain_array(src: RainSource) -> Tuple[np.ndarray, Optional[np.ndarray]]:
@@ -253,10 +254,11 @@ def blended_rain_step_mm_rank0(  # define function blended_rain_step_mm_rank0
     dt_s: float,  # execute statement
     step_idx: int,  # execute statement
     sim_time: Optional[np.datetime64],  # execute statement
-) -> np.ndarray:  # execute statement
-    """Compute blended rainfall (mm/step) on rank0."""  # execute statement
+) -> Tuple[np.ndarray, bool]:  # execute statement
+    """Compute blended rainfall (mm/step) on rank0 and flag whether any source advanced in time."""  # execute statement
     H, W = shape  # set H, W
     total = np.zeros((H, W), dtype=np.float64)  # set total
+    rain_updated = False  # track if any source advanced to a new time slice
 
     for src in sources:  # loop over src in sources:
         if src.weight == 0.0:  # check condition src.weight == 0.0:
@@ -287,7 +289,7 @@ def blended_rain_step_mm_rank0(  # define function blended_rain_step_mm_rank0
                             it = int(np.clip(it, 0, time_vals.size - 1))
                         else:
                             raise ValueError(f"Unknown rain selection mode '{src.select}' for '{src.name}'")
-                    _log_rain_time_usage(src, time_vals, it)
+                    rain_updated = rain_updated or _log_rain_time_usage(src, time_vals, it)  # update flag on time change
                     field = np.take(arr, indices=it, axis=0)
             else:
                 ds = xr_open_cached(src.path)
@@ -316,7 +318,7 @@ def blended_rain_step_mm_rank0(  # define function blended_rain_step_mm_rank0
                             it = int(np.clip(it, 0, time_vals.size - 1))
                         else:
                             raise ValueError(f"Unknown rain selection mode '{src.select}' for '{src.name}'")
-                    _log_rain_time_usage(src, time_vals, it)
+                    rain_updated = rain_updated or _log_rain_time_usage(src, time_vals, it)  # update flag on time change
                     field = np.asarray(da.isel({tdim: it}).values)
                 else:
                     raise ValueError("Rain var must be 2D or 3D (time,y,x)")
@@ -329,4 +331,4 @@ def blended_rain_step_mm_rank0(  # define function blended_rain_step_mm_rank0
 
         total += src.weight * rain_to_step_mm(field, src.mode, dt_s)  # execute statement
 
-    return total  # return total
+    return total, rain_updated  # return rainfall and whether any source advanced

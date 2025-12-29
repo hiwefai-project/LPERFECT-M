@@ -840,7 +840,7 @@ def run_simulation(
 
         # Rank0 reads and blends rainfall, then scatters slabs.
         if rank == 0:  # check condition rank == 0:
-            rain_full = blended_rain_step_mm_rank0(  # set rain_step_mm
+            rain_full, rain_updated = blended_rain_step_mm_rank0(  # set rain_step_mm and rain_updated
                 sources=rain_sources,  # set sources
                 shape=(nrows, ncols),  # set shape
                 dt_s=dt_s,  # set dt_s
@@ -851,12 +851,14 @@ def run_simulation(
             rain_full = np.where(dom.active_mask, rain_full, 0.0).astype(np.float32)  # set rain_step_mm
         else:  # fallback branch
             rain_full = None  # set rain_full
+            rain_updated = False  # set rain_updated when not rank0
 
         if size > 1:  # check condition size > 1:
             if particle_parallel:
                 rain_slab_mm = comm.bcast(rain_full, root=0).astype(np.float32, copy=False)  # set rain_slab_mm
             else:
                 rain_slab_mm = scatter_field_partition(comm, partition, rain_full, nrows, ncols, np.float32)  # set rain_slab_mm
+            rain_updated = bool(comm.bcast(rain_updated, root=0))  # broadcast rain_updated to all ranks
         else:
             rain_slab_mm = rain_full.astype(np.float32, copy=False)  # type: ignore[union-attr]
 
@@ -904,7 +906,7 @@ def run_simulation(
         new_particles_local = int(newp.r.size)
         new_particles = comm.allreduce(new_particles_local, op=MPI.SUM) if size > 1 else new_particles_local
         total_spawned_particles += new_particles
-        if particle_parallel and mpi_active:
+        if particle_parallel and mpi_active and rain_updated:
             _rebalance_particles("rain_update", k, step_time_s)
 
         # Optional load balancing of particles across ranks before advection.

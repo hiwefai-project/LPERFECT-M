@@ -203,7 +203,7 @@ def run_simulation(
 
     def _rebalance_particles(reason: str, step_idx: int, step_time_s: float) -> None:
         """Gather state, rebuild slabs with particle-aware weights, and resplit."""
-        nonlocal partition, P_slab, Q_slab, particles, r0, r1, CN_slab, next_balance_time
+        nonlocal partition, P_slab, Q_slab, particles, r0, r1, CN_slab, cn_params, next_balance_time
         if not mpi_active or comm is None:
             return
 
@@ -285,6 +285,7 @@ def run_simulation(
         partition = new_partition
         r0, r1 = partition.bounds(rank if size > 1 else 0)
         CN_slab = dom.cn[r0:r1, :]
+        cn_params = precompute_scs_cn_params(CN_slab, ia_ratio=ia_ratio, device=device)  # refresh CN params for new slab
         new_counts_by_rank = comm.allgather(int(particles.r.size))
         if rank == 0:
             logger.info(

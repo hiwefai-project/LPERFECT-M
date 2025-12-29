@@ -137,6 +137,38 @@ Measurement notes:
 - Migration ratio is computed as `(migrated / total active particles) * 100` per step and helps identify decomposition changes before scaling to many nodes.
 - If `compute.shared_memory.enabled=true`, ensure `workers` matches the cores allocated by the launcher (e.g., `SLURM_CPUS_PER_TASK`) to reproduce the speedups above.
 
+### Performance-tuned compute block (CPU, 4 MPI ranks)
+
+For large national domains (e.g., 15 600 × 16 800) on a CPU-only node with four MPI ranks, use this `compute` section to minimize communication while keeping ranks busy:
+
+```json
+"compute": {
+  "device": "cpu",
+  "mpi": {
+    "enabled": true,
+    "decomposition": "balanced",
+    "min_rows_per_rank": 512,
+    "balance": {
+      "every_steps": 120,
+      "every_sim_s": 0,
+      "auto": true,
+      "imbalance_threshold": 1.5
+    }
+  },
+  "shared_memory": {
+    "enabled": true,
+    "workers": null,
+    "min_particles_per_worker": 2000,
+    "chunk_size": 16384
+  }
+}
+```
+
+- `balanced` slabs plus `min_rows_per_rank` keep ranks from owning tiny slices, which reduces migration pressure and amortizes I/O per slab.
+- `balance.auto` with a 1.5 threshold re-splits when particle load skews; `every_steps=120` forces a check every 10 minutes (with `dt_s=5 s`) for long events.
+- Neighbor-only migration kicks in automatically when particles cross only adjacent slabs, shrinking MPI traffic without changing results.
+- Shared-memory threading is enabled per rank and defaults `workers` to hardware cores; the lower `min_particles_per_worker` and smaller `chunk_size` improve throughput when particle counts ramp up gradually.
+
 ### How LPERFECT now computes and exports metrics
 
 LPERFECT can emit a GPT-friendly JSON report with per-step and summary metrics that work across:

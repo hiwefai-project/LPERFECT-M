@@ -265,22 +265,65 @@ def migrate_particles_partition(comm, particles: Particles, plan: PartitionPlan)
         vol=particles.vol[keep_mask],
         tau=particles.tau[keep_mask],
     )
-    # Build per-destination send buffers.
-    sendbuf_by_rank: List[np.ndarray] = []
-    for dst in range(size):
-        if dst == rank:
-            sendbuf_by_rank.append(np.zeros(0, dtype=np.float64))
-            continue
-        m = dest == dst
-        if np.any(m):
-            buf = pack_particles_to_float64(
-                Particles(r=particles.r[m], c=particles.c[m], vol=particles.vol[m], tau=particles.tau[m])
-            ).ravel()
-            sendbuf_by_rank.append(buf)
-        else:
-            sendbuf_by_rank.append(np.zeros(0, dtype=np.float64))
-    # Exchange buffers.
-    recvflat = alltoallv_float64(comm, sendbuf_by_rank)  # set recvflat
+    # Identify actual destinations to avoid all-to-all when only neighbors receive payloads.
+    send_targets = [int(x) for x in np.unique(dest) if int(x) != rank and int(x) < size and plan.counts[int(x)] > 0]  # compute unique targets
+
+    # Compute neighbor ranks in the slab topology (previous/next non-empty slabs).
+    prev_rank = next((r for r in range(rank - 1, -1, -1) if plan.counts[r] > 0), None)  # find previous active rank
+    next_rank = next((r for r in range(rank + 1, size) if plan.counts[r] > 0), None)  # find next active rank
+    neighbor_set = {r for r in (prev_rank, next_rank) if r is not None}  # build neighbor set
+
+    # Prefer lightweight neighbor exchanges when all sends target adjacent slabs.
+    use_neighbor_exchange = bool(send_targets) and all(dst in neighbor_set for dst in send_targets)  # decide exchange path
+
+    if not use_neighbor_exchange:
+        # Build per-destination send buffers for the fallback all-to-all path.
+        sendbuf_by_rank: List[np.ndarray] = []
+        for dst in range(size):
+            if dst == rank:
+                sendbuf_by_rank.append(np.zeros(0, dtype=np.float64))
+                continue
+            m = dest == dst
+            if np.any(m):
+                buf = pack_particles_to_float64(
+                    Particles(r=particles.r[m], c=particles.c[m], vol=particles.vol[m], tau=particles.tau[m])
+                ).ravel()
+                sendbuf_by_rank.append(buf)
+            else:
+                sendbuf_by_rank.append(np.zeros(0, dtype=np.float64))
+        recvflat = alltoallv_float64(comm, sendbuf_by_rank)  # set recvflat
+    else:
+        # Build neighbor-only buffers to reduce P^2 communication.
+        send_buffers = {}  # map neighbor -> flat payload
+        for dst in neighbor_set:
+            mask_dst = dest == dst  # mask particles bound for this neighbor
+            if np.any(mask_dst):  # if any particles go to this neighbor
+                send_buffers[dst] = pack_particles_to_float64(
+                    Particles(r=particles.r[mask_dst], c=particles.c[mask_dst], vol=particles.vol[mask_dst], tau=particles.tau[mask_dst])
+                ).ravel()  # pack payload
+            else:
+                send_buffers[dst] = np.zeros(0, dtype=np.float64)  # empty payload
+
+        recv_chunks: List[np.ndarray] = []  # collect incoming payloads
+        for nbr in neighbor_set:
+            send_buf = send_buffers.get(nbr, np.zeros(0, dtype=np.float64))  # payload to neighbor
+            send_count = np.array([send_buf.size], dtype=np.int64)  # exchange payload sizes first
+            recv_count = np.zeros(1, dtype=np.int64)  # buffer for incoming size
+            comm.Sendrecv(send_count, dest=nbr, sendtag=0, recvbuf=recv_count, source=nbr, recvtag=0)  # exchange sizes
+
+            # Allocate receive buffer using the announced size.
+            if int(recv_count[0]) > 0:
+                recv_buf = np.empty(int(recv_count[0]), dtype=np.float64)  # allocate receive payload
+            else:
+                recv_buf = np.zeros(0, dtype=np.float64)  # empty receive payload
+
+            # Exchange particle payloads.
+            comm.Sendrecv(send_buf, dest=nbr, sendtag=1, recvbuf=recv_buf, source=nbr, recvtag=1)  # exchange payloads
+            if recv_buf.size:  # if we received any data
+                recv_chunks.append(recv_buf)  # stash chunk
+
+        recvflat = np.concatenate(recv_chunks) if recv_chunks else np.zeros(0, dtype=np.float64)
+
     # If nothing received, return local only.
     if recvflat.size == 0:
         return local

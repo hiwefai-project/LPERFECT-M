@@ -47,7 +47,7 @@ from .mpi_utils import (  # import .mpi_utils import (
     gather_particles_to_rank0,  # execute statement
     scatter_particles_from_rank0,  # execute statement
     migrate_particles_partition,  # execute statement
-    rank_of_row_partition,  # execute statement
+    scatter_new_particles_even,  # execute statement
     rebalance_particles_even,  # execute statement
 )  # execute statement
 
@@ -902,12 +902,15 @@ def run_simulation(
                 particle_vol_m3=particle_vol_m3,  # set particle_vol_m3
                 active_mask_global=dom.active_mask,  # set active_mask_global
             )  # execute statement
-        particles = concat_particles(particles, newp)  # set particles
-        new_particles_local = int(newp.r.size)
+        if particle_parallel and mpi_active:
+            distributed_newp = scatter_new_particles_even(comm, newp)  # spread spawn evenly without touching existing layout
+            particles = concat_particles(particles, distributed_newp)  # set particles
+            new_particles_local = int(distributed_newp.r.size)
+        else:
+            particles = concat_particles(particles, newp)  # set particles
+            new_particles_local = int(newp.r.size)
         new_particles = comm.allreduce(new_particles_local, op=MPI.SUM) if size > 1 else new_particles_local
         total_spawned_particles += new_particles
-        if particle_parallel and mpi_active and rain_updated:
-            _rebalance_particles("rain_update", k, step_time_s)
 
         # Optional load balancing of particles across ranks before advection.
         _maybe_rebalance(step_idx=k, step_time_s=step_time_s)
@@ -934,12 +937,11 @@ def run_simulation(
         if size > 1 and not particle_parallel:  # check condition size > 1:
             if metrics_enabled:
                 active_particles_before_migration = int(comm.allreduce(active_particles_before_migration, op=MPI.SUM))
-                dest = rank_of_row_partition(particles.r, partition)
-                migrated_local = int(np.sum(dest != rank))
-                migrated_particles_global = int(comm.allreduce(migrated_local, op=MPI.SUM))
             mig_t0 = perf_counter()
-            particles = migrate_particles_partition(comm, particles, plan=partition)  # set particles
+            particles, migrated_local = migrate_particles_partition(comm, particles, plan=partition)  # migrate and count
             migration_t = perf_counter() - mig_t0
+            if metrics_enabled:
+                migrated_particles_global = int(comm.allreduce(migrated_local, op=MPI.SUM))
 
         # Compute current system volume (sum of particle volumes).
         system_vol_local = float(particles.vol.sum())  # set system_vol_local

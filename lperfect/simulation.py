@@ -456,7 +456,8 @@ def run_simulation(
         if particle_parallel:
             P_slab = comm.bcast(P_full if P_full is not None else np.zeros((nrows, ncols), dtype=np.float32), root=0).astype(np.float32)
             Q_slab = comm.bcast(Q_full if Q_full is not None else np.zeros((nrows, ncols), dtype=np.float32), root=0).astype(np.float32)
-            particles_all = particles_all if rank == 0 else empty_particles()
+            particles_all = particles_all if particles_all is not None else empty_particles()  # normalize None to empty on rank0
+            particles_all = particles_all if rank == 0 else empty_particles()  # keep non-root empty
             particles = rebalance_particles_even(comm, particles_all)  # distribute evenly
             r0, r1 = 0, nrows  # ensure full-range indexing
         else:

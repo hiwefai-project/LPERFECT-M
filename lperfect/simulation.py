@@ -907,6 +907,9 @@ def run_simulation(
         if particle_parallel and mpi_active:
             _rebalance_particles("rain_update", k, step_time_s)
 
+        # Optional load balancing of particles across ranks before advection.
+        _maybe_rebalance(step_idx=k, step_time_s=step_time_s)
+
         # Advect particles.
         advect_t0 = perf_counter()
         particles, outflow_vol_local, nhops_local, outflow_points_local, outflow_particles_local = advect_particles_one_step(  # set particles, outflow_vol_local, nhops_local, outflow_points_local, outflow_particles_local
@@ -1119,9 +1122,6 @@ def run_simulation(
                 if _write_output(step_time_s):
                     output_written_any = True
                     output_written_on_final_step = True
-
-        # Optional load balancing of particles across ranks.
-        _maybe_rebalance(step_idx=k, step_time_s=step_time_s)
 
     # ------------------------------
     # Final output guard (in case no write happened yet)

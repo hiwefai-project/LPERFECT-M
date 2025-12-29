@@ -175,6 +175,9 @@ def run_simulation(
     balance_auto = bool(balance_cfg.get("auto", False))
     balance_threshold = float(balance_cfg.get("imbalance_threshold", 2.0) or 2.0)
     next_balance_time: float | None = balance_every_sim_s if balance_every_sim_s > 0.0 else None
+    initial_balance_pending = bool(
+        mpi_active and not particle_parallel and (balance_every_steps > 0 or balance_every_sim_s > 0.0 or balance_auto)
+    )
 
     # Start time for time-aware rain selection and output timestamps.
     start_time = parse_iso8601_to_datetime64(mcfg.get("start_time", None))  # set start_time
@@ -295,12 +298,16 @@ def run_simulation(
 
     def _maybe_rebalance(step_idx: int, step_time_s: float) -> None:
         """Trigger periodic or automatic particle-aware rebalancing."""
-        nonlocal next_balance_time
+        nonlocal next_balance_time, initial_balance_pending
         if not mpi_active or comm is None:
             return
 
         trigger = False
         reason = ""
+        if initial_balance_pending:
+            trigger = True
+            reason = "initial_balance"
+            initial_balance_pending = False
 
         if balance_every_steps > 0 and ((step_idx + 1) % balance_every_steps == 0):
             trigger = True

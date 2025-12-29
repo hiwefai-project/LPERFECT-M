@@ -132,10 +132,12 @@ def default_config() -> Dict[str, Any]:  # define function default_config
                 "enabled": False,
                 "output": None,
                 "max_samples": 256,
+                "format": "detailed",
             },
             "assistant": {
                 "enabled": False,
                 "output": None,
+                "format": "detailed",
             },
         },
     }  # execute statement

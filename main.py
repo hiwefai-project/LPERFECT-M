@@ -74,8 +74,29 @@ def _normalize_domain_entries(cfg: Dict[str, Any], default_domain: Dict[str, Any
         merged = deep_update(merged, dom_cfg)
         name = merged.get("name") or merged.get("id") or f"domain_{idx + 1}"
         merged.setdefault("name", name)
+        merged.setdefault("parent", "root")
         resolved.append(merged)
-    return resolved
+
+    seen_names = set()
+    for dom_cfg in resolved:
+        if dom_cfg["name"] in seen_names:
+            raise ValueError(f"Duplicate domain name '{dom_cfg['name']}' detected in domains list.")
+        seen_names.add(dom_cfg["name"])
+
+    ordered: List[Dict[str, Any]] = []
+    remaining = {dom["name"]: dom for dom in resolved}
+    while remaining:
+        progressed = False
+        for name, dom_cfg in list(remaining.items()):
+            parent = dom_cfg.get("parent", "root")
+            if parent == "root" or any(parent == d["name"] for d in ordered):
+                ordered.append(dom_cfg)
+                remaining.pop(name)
+                progressed = True
+        if not progressed:
+            raise ValueError("Invalid domain nesting: ensure parents exist and avoid circular references.")
+
+    return ordered
 
 
 def _prepare_domain_run_config(
@@ -184,11 +205,15 @@ def main() -> None:
         metrics_parallel_cfg["enabled"] = True
     if args.parallel_metrics_output is not None:
         metrics_parallel_cfg["output"] = args.parallel_metrics_output
+    if args.parallel_metrics_format is not None:
+        metrics_parallel_cfg["format"] = args.parallel_metrics_format
     metrics_assistant_cfg = metrics_root.setdefault("assistant", {})
     if args.ai_metrics:
         metrics_assistant_cfg["enabled"] = True
     if args.ai_metrics_output is not None:
         metrics_assistant_cfg["output"] = args.ai_metrics_output
+    if args.ai_metrics_format is not None:
+        metrics_assistant_cfg["format"] = args.ai_metrics_format
 
     # Resolve MPI preferences and initialize communicator after config parsing.
     world_size_guess = MPI.COMM_WORLD.Get_size() if HAVE_MPI else 1
@@ -220,6 +245,7 @@ def main() -> None:
     for idx, dom_cfg in enumerate(domains):
         domain_label = str(dom_cfg.get("name", f"domain_{idx + 1}"))
         label_slug = _slugify(domain_label)
+        parent_label = str(dom_cfg.get("parent", "root"))
         run_cfg = _prepare_domain_run_config(cfg, dom_cfg, label_slug, ndomains)
 
         # Enforce NetCDF-only domain input.
@@ -241,10 +267,11 @@ def main() -> None:
 
         if rank == 0:
             logger.info(
-                "Starting simulation for domain '%s' (%d/%d)",
+                "Starting simulation for domain '%s' (%d/%d, parent=%s)",
                 domain_label,
                 idx + 1,
                 ndomains,
+                parent_label,
             )
 
         # Run the main simulation driver with the loaded configuration and domain.

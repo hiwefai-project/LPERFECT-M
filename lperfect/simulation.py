@@ -139,9 +139,19 @@ def run_simulation(
     metrics_enabled = bool(metrics_cfg.get("enabled", False))  # set metrics_enabled
     metrics_output = metrics_cfg.get("output", None)  # set metrics_output
     metrics_max_samples = int(metrics_cfg.get("max_samples", 256) or 0)  # set metrics_max_samples
+    metrics_format = str(metrics_cfg.get("format", "detailed") or "detailed")  # set metrics_format
+    if metrics_format not in {"detailed", "compact"}:  # check condition metrics_format not in {"detailed", "compact"}:
+        raise ValueError("metrics.parallelization.format must be 'detailed' or 'compact'.")  # raise ValueError
+    metrics_indent = 2 if metrics_format == "detailed" else None  # set metrics_indent
+    metrics_separators = None if metrics_format == "detailed" else (",", ":")  # set metrics_separators
     assistant_cfg = metrics_root.get("assistant", {}) if isinstance(metrics_root, dict) else {}  # set assistant_cfg
     assistant_metrics_enabled = bool(assistant_cfg.get("enabled", False))  # set assistant_metrics_enabled
     assistant_metrics_output = assistant_cfg.get("output", None)  # set assistant_metrics_output
+    assistant_metrics_format = str(assistant_cfg.get("format", "detailed") or "detailed")  # set assistant_metrics_format
+    if assistant_metrics_format not in {"detailed", "compact"}:  # check condition assistant_metrics_format not valid:
+        raise ValueError("metrics.assistant.format must be 'detailed' or 'compact'.")  # raise ValueError
+    assistant_indent = 2 if assistant_metrics_format == "detailed" else None  # set assistant_indent
+    assistant_separators = None if assistant_metrics_format == "detailed" else (",", ":")  # set assistant_separators
     balance_cfg = compute_cfg.get("mpi", {}).get("balance", {}) if isinstance(compute_cfg.get("mpi", {}), dict) else {}
     balance_every_steps = int(balance_cfg.get("every_steps", 0) or 0)
     balance_every_sim_s = float(balance_cfg.get("every_sim_s", 0.0) or 0.0)
@@ -218,6 +228,16 @@ def run_simulation(
         particles = scatter_particles_from_rank0(comm, partition, particles_all)
         r0, r1 = partition.bounds(rank if size > 1 else 0)
         CN_slab = dom.cn[r0:r1, :]
+        new_counts_by_rank = comm.allgather(int(particles.r.size))
+        if rank == 0:
+            logger.info(
+                "MPI load-balance completed: %s -> %s (reason=%s step=%d time=%.1fs)",
+                counts_by_rank,
+                new_counts_by_rank,
+                reason,
+                step_idx + 1,
+                step_time_s,
+            )
 
     def _maybe_rebalance(step_idx: int, step_time_s: float) -> None:
         """Trigger periodic or automatic particle-aware rebalancing."""
@@ -1081,12 +1101,16 @@ def run_simulation(
                     "segments are approximate and exclude synchronization overhead outside each block",
                 ],
             }
-            logger.info("Parallelization metrics (GPT-friendly JSON): %s", json.dumps(metrics_report, indent=2))
+            logger.info(
+                "Parallelization metrics (%s JSON): %s",
+                metrics_format,
+                json.dumps(metrics_report, indent=metrics_indent, separators=metrics_separators),
+            )
             if metrics_output:
                 Path(metrics_output).parent.mkdir(parents=True, exist_ok=True)
                 with open(metrics_output, "w", encoding="utf-8") as f:
-                    json.dump(metrics_report, f, indent=2)
-                logger.info("Parallelization metrics written to %s", metrics_output)
+                    json.dump(metrics_report, f, indent=metrics_indent, separators=metrics_separators)
+                logger.info("Parallelization metrics written to %s using %s format", metrics_output, metrics_format)
         if assistant_metrics_enabled:
             active_cells = int(np.count_nonzero(dom.active_mask))  # set active_cells
             total_cells = int(dom.active_mask.size)  # set total_cells
@@ -1168,9 +1192,13 @@ def run_simulation(
                     "Travel-time statistics are derived from active cells when automatic mode is used.",  # execute statement
                 ],  # execute statement
             }  # execute statement
-            logger.info("AI assistant metrics (GPT-friendly JSON): %s", json.dumps(assistant_report, indent=2))
+            logger.info(
+                "AI assistant metrics (%s JSON): %s",
+                assistant_metrics_format,
+                json.dumps(assistant_report, indent=assistant_indent, separators=assistant_separators),
+            )
             if assistant_metrics_output:
                 Path(assistant_metrics_output).parent.mkdir(parents=True, exist_ok=True)
                 with open(assistant_metrics_output, "w", encoding="utf-8") as f:
-                    json.dump(assistant_report, f, indent=2)
-                logger.info("AI assistant metrics written to %s", assistant_metrics_output)
+                    json.dump(assistant_report, f, indent=assistant_indent, separators=assistant_separators)
+                logger.info("AI assistant metrics written to %s using %s format", assistant_metrics_output, assistant_metrics_format)

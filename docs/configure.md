@@ -139,7 +139,7 @@ You can shorten this file by including only the fields you want to override.
 Controls where the spatial domain is loaded from and how variables are mapped. You can:
 
 1. Provide a single `domain` object (backwards compatible).
-2. Provide a `domains` array to run multiple nested grids in sequence (e.g., national 90 m, regional 30 m, city 10 m). Each domain keeps the same hierarchical / heterogeneous parallelization scheme already used by LPERFECT; the model is executed once per domain with the same numerical and hydrological settings.
+2. Provide a `domains` array to run multiple nested grids with explicit parent/child relationships (e.g., national 90 m, regional 30 m, city 10 m). Each domain keeps the same hierarchical / heterogeneous parallelization scheme already used by LPERFECT, and coarse domains must feed and receive particle fluxes from their children at every time step to honor the two-way nesting assumption.
 
 Common keys for each domain object:
 
@@ -171,6 +171,7 @@ Controls optional metrics that capture wall-clock timings, throughput, and migra
 | `enabled` | `false` | Turn on metrics collection. |
 | `output` | `null` | Path to write the metrics JSON. When `null`, the JSON is logged only. |
 | `max_samples` | `256` | Maximum per-step samples to retain; larger runs are down-sampled evenly. |
+| `format` | `detailed` | JSON verbosity: `detailed` pretty-prints, `compact` minifies for smaller files. |
 
 Example:
 
@@ -194,6 +195,7 @@ Produces a compact GPT-friendly JSON report with computational settings and hydr
 | --- | --- | --- |
 | `enabled` | `false` | Turn on AI-assistant metrics. |
 | `output` | `null` | Path to write the metrics JSON. When `null`, the JSON is logged only. |
+| `format` | `detailed` | JSON verbosity: `detailed` pretty-prints, `compact` minifies for smaller files. |
 
 Example:
 
@@ -235,23 +237,31 @@ Example:
       "name": "national_90m",
       "domain_nc": "domain_90m.nc",
       "output": { "out_netcdf": "flood_depth_90m.nc" },
-      "restart": { "out": "restart_90m.nc" }
+      "restart": { "out": "restart_90m.nc" },
+      "parent": "root"
     },
     {
       "name": "regional_30m",
       "domain_nc": "domain_30m.nc",
       "output": { "out_netcdf": "flood_depth_30m.nc" },
-      "restart": { "out": "restart_30m.nc" }
+      "restart": { "out": "restart_30m.nc" },
+      "parent": "national_90m"
     },
     {
       "name": "city_10m",
       "domain_nc": "domain_10m.nc",
       "output": { "out_netcdf": "flood_depth_10m.nc" },
-      "restart": { "out": "restart_10m.nc" }
+      "restart": { "out": "restart_10m.nc" },
+      "parent": "regional_30m"
     }
   ]
 }
 ```
+
+Domains are validated so each `parent` is either `"root"` or the name of another
+domain in the list, mirroring the hierarchy used by `utils/make_domain.py`.
+LPERFECT executes domains in coarse-to-fine order to support the two-way nesting
+assumption (fine grids exchange inflow/outflow with their parents at each step).
 
 ---
 

@@ -121,11 +121,13 @@
     "parallelization": {
       "enabled": false,
       "output": null,
-      "max_samples": 256
+      "max_samples": 256,
+      "format": "detailed"
     },
     "assistant": {
       "enabled": false,
-      "output": null
+      "output": null,
+      "format": "detailed"
     }
   }
 }

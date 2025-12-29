@@ -12,6 +12,15 @@ complementary reports are available:
 Both reports are logged on rank 0; if you provide an output path they are also
 written to disk as JSON.
 
+### Choose detailed vs compact JSON
+
+Both GPT-friendly reports can be emitted as **detailed** (pretty-printed with
+indentation) or **compact** (minified, no extra whitespace) JSON. Use the CLI
+flags `--ai-metrics-format {detailed|compact}` and `--parallel-metrics-format
+{detailed|compact}` or set `metrics.assistant.format` / `metrics.parallelization.format`
+in the config file to match your workflow (pretty for debugging, compact for
+token-efficient copy/paste into an AI assistant).
+
 ## Enabling the AI-friendly hydrology + compute report
 
 The assistant-oriented report focuses on **what you ran** (grid size, travel

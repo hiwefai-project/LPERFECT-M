@@ -175,6 +175,9 @@ def run_simulation(
     balance_auto = bool(balance_cfg.get("auto", False))
     balance_threshold = float(balance_cfg.get("imbalance_threshold", 2.0) or 2.0)
     next_balance_time: float | None = balance_every_sim_s if balance_every_sim_s > 0.0 else None
+    initial_balance_pending = bool(
+        mpi_active and not particle_parallel and (balance_every_steps > 0 or balance_every_sim_s > 0.0 or balance_auto)
+    )
 
     # Start time for time-aware rain selection and output timestamps.
     start_time = parse_iso8601_to_datetime64(mcfg.get("start_time", None))  # set start_time
@@ -182,6 +185,8 @@ def run_simulation(
 
     # Precompute downstream lookup (replicated).
     valid, ds_r, ds_c = build_downstream_index(dom.d8, encoding)  # set valid, ds_r, ds_c
+    # Static active-cell weights (reused when recomputing slab partitions).
+    active_row_weights = np.sum(dom.active_mask.astype(np.int32), axis=1).astype(np.int64)
 
     # Build a rank-aware partition plan (contiguous row slabs, load-balanced by active cells).
     if particle_parallel and mpi_active:
@@ -198,7 +203,7 @@ def run_simulation(
 
     def _rebalance_particles(reason: str, step_idx: int, step_time_s: float) -> None:
         """Gather state, rebuild slabs with particle-aware weights, and resplit."""
-        nonlocal partition, P_slab, Q_slab, particles, r0, r1, CN_slab, next_balance_time
+        nonlocal partition, P_slab, Q_slab, particles, r0, r1, CN_slab, cn_params, next_balance_time
         if not mpi_active or comm is None:
             return
 
@@ -235,18 +240,16 @@ def run_simulation(
             )
 
         # Gather slabs and particles to rank0.
-        P_full = gather_field_partition_to_rank0(comm, partition, P_slab, nrows, ncols)
-        Q_full = gather_field_partition_to_rank0(comm, partition, Q_slab, nrows, ncols)
-        particles_all = gather_particles_to_rank0(comm, particles)
+        local_particle_rows = (
+            np.bincount(particles.r.astype(np.int32), minlength=nrows) if particles.r.size > 0 else np.zeros(nrows, dtype=np.int64)
+        )  # local per-row particle counts
+        particle_row_counts = np.zeros_like(local_particle_rows)  # buffer for the global row histogram
+        comm.Allreduce(local_particle_rows, particle_row_counts, op=MPI.SUM)  # sum histograms across ranks
+        row_weights = active_row_weights + particle_row_counts  # combine static active rows with live particle density
+        row_weights = np.where(row_weights <= 0, 1, row_weights)  # enforce positive weights for every row
 
         # Build a new partition weighted by active cells and current particle density.
         if rank == 0:
-            particle_row_counts = (
-                np.bincount(particles_all.r.astype(np.int32), minlength=nrows) if particles_all.r.size > 0 else np.zeros(nrows, dtype=np.int64)
-            )
-            active_weights = np.sum(dom.active_mask.astype(np.int32), axis=1).astype(np.int64)
-            row_weights = active_weights + particle_row_counts
-            row_weights = np.where(row_weights <= 0, 1, row_weights)
             new_plan = build_partition_from_weights(
                 row_weights=row_weights,
                 size=max(1, size),
@@ -259,16 +262,30 @@ def run_simulation(
             counts = None
             starts = None
 
-        counts = comm.bcast(counts, root=0)
-        starts = comm.bcast(starts, root=0)
-        partition = PartitionPlan(counts=np.asarray(counts, dtype=np.int32), starts=np.asarray(starts, dtype=np.int32))
+        current_plan = partition
+        counts = comm.bcast(counts, root=0)  # broadcast candidate counts
+        starts = comm.bcast(starts, root=0)  # broadcast candidate starts
+        counts_arr = np.asarray(counts, dtype=np.int32)
+        starts_arr = np.asarray(starts, dtype=np.int32)
+        if np.array_equal(counts_arr, current_plan.counts) and np.array_equal(starts_arr, current_plan.starts):
+            if rank == 0:
+                logger.debug("MPI load-balance skipped: partition unchanged (reason=%s)", reason)
+            return
+        new_partition = PartitionPlan(counts=counts_arr, starts=starts_arr)
+
+        # Gather slabs and particles to rank0 only after we know a redistribution is required.
+        P_full = gather_field_partition_to_rank0(comm, current_plan, P_slab, nrows, ncols)
+        Q_full = gather_field_partition_to_rank0(comm, current_plan, Q_slab, nrows, ncols)
+        particles_all = gather_particles_to_rank0(comm, particles)
 
         # Scatter to the refreshed layout.
-        P_slab = scatter_field_partition(comm, partition, P_full, nrows, ncols, np.float32)
-        Q_slab = scatter_field_partition(comm, partition, Q_full, nrows, ncols, np.float32)
-        particles = scatter_particles_from_rank0(comm, partition, particles_all)
+        P_slab = scatter_field_partition(comm, new_partition, P_full, nrows, ncols, np.float32)
+        Q_slab = scatter_field_partition(comm, new_partition, Q_full, nrows, ncols, np.float32)
+        particles = scatter_particles_from_rank0(comm, new_partition, particles_all)
+        partition = new_partition
         r0, r1 = partition.bounds(rank if size > 1 else 0)
         CN_slab = dom.cn[r0:r1, :]
+        cn_params = precompute_scs_cn_params(CN_slab, ia_ratio=ia_ratio, device=device)  # refresh CN params for new slab
         new_counts_by_rank = comm.allgather(int(particles.r.size))
         if rank == 0:
             logger.info(
@@ -282,12 +299,16 @@ def run_simulation(
 
     def _maybe_rebalance(step_idx: int, step_time_s: float) -> None:
         """Trigger periodic or automatic particle-aware rebalancing."""
-        nonlocal next_balance_time
+        nonlocal next_balance_time, initial_balance_pending
         if not mpi_active or comm is None:
             return
 
         trigger = False
         reason = ""
+        if initial_balance_pending:
+            trigger = True
+            reason = "initial_balance"
+            initial_balance_pending = False
 
         if balance_every_steps > 0 and ((step_idx + 1) % balance_every_steps == 0):
             trigger = True

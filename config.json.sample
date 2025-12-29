@@ -100,21 +100,21 @@
   "compute": {
     "device": "cpu",
     "mpi": {
-      "enabled": null,
-      "decomposition": "auto",
-      "min_rows_per_rank": 1,
+      "enabled": true,
+      "decomposition": "balanced",
+      "min_rows_per_rank": 512,
       "balance": {
-        "every_steps": 0,
+        "every_steps": 120,
         "every_sim_s": 0,
-        "auto": false,
-        "imbalance_threshold": 2.0
+        "auto": true,
+        "imbalance_threshold": 1.5
       }
     },
     "shared_memory": {
-      "enabled": null,
+      "enabled": true,
       "workers": null,
-      "min_particles_per_worker": 5000,
-      "chunk_size": 65536
+      "min_particles_per_worker": 2000,
+      "chunk_size": 16384
     }
   },
   "metrics": {

@@ -48,6 +48,7 @@ from .mpi_utils import (  # import .mpi_utils import (
     scatter_particles_from_rank0,  # execute statement
     migrate_particles_partition,  # execute statement
     rank_of_row_partition,  # execute statement
+    rebalance_particles_even,  # execute statement
 )  # execute statement
 
 # Import Domain class.
@@ -87,6 +88,15 @@ def run_simulation(
     # Resolve compute device.
     compute_cfg = cfg.get("compute", {})  # set compute_cfg
     device = normalize_device(compute_cfg.get("device", "cpu"))  # set device
+    parallel_cfg = compute_cfg.get("parallelization", {}) if isinstance(compute_cfg, dict) else {}  # set parallel_cfg
+    parallel_schema = str(parallel_cfg.get("schema", "slab") or "slab").lower().strip()  # set parallel_schema
+    if parallel_schema not in {"slab", "particles"}:  # check condition parallel_schema not supported:
+        raise ValueError("compute.parallelization.schema must be 'slab' or 'particles'.")  # raise ValueError
+    io_mode = str(parallel_cfg.get("io", "rank0") or "rank0").lower().strip()  # set io_mode
+    if io_mode not in {"rank0", "all"}:  # check condition io_mode invalid:
+        raise ValueError("compute.parallelization.io must be 'rank0' or 'all'.")  # raise ValueError
+    io_rank0_only = io_mode == "rank0"  # set io_rank0_only
+    particle_parallel = parallel_schema == "particles"  # set particle_parallel
     world_size = int(mpi_world_size) if mpi_world_size is not None else int(size)
     mpi_cfg = MPIConfig.from_dict(compute_cfg.get("mpi", {}), world_size=world_size)
     mpi_active = mpi_cfg.enabled and size > 1 and comm is not None
@@ -124,6 +134,13 @@ def run_simulation(
             mpi_cfg.min_rows_per_rank,
             active_rows,
         )
+        if mpi_active:
+            logger.info(
+                "Parallelization schema=%s, io_mode=%s (rank0_only=%s)",
+                parallel_schema,
+                io_mode,
+                str(io_rank0_only),
+            )
     shared_cfg = SharedMemoryConfig.from_dict(compute_cfg.get("shared_memory", {}))  # set shared_cfg
     if rank == 0 and shared_cfg.enabled and shared_cfg.workers > 1:  # check condition rank == 0 and shared_cfg.enabled and shared_cfg.workers > 1:
         logger.info(
@@ -167,18 +184,42 @@ def run_simulation(
     valid, ds_r, ds_c = build_downstream_index(dom.d8, encoding)  # set valid, ds_r, ds_c
 
     # Build a rank-aware partition plan (contiguous row slabs, load-balanced by active cells).
-    partition: PartitionPlan = build_partition_from_active(
-        active_mask=dom.active_mask,
-        size=max(1, size),
-        strategy=mpi_cfg.decomposition,
-        min_rows_per_rank=mpi_cfg.min_rows_per_rank,
-    )
-    r0, r1 = partition.bounds(rank if size > 1 else 0)
+    if particle_parallel and mpi_active:
+        partition = PartitionPlan(counts=np.array([nrows], dtype=np.int32), starts=np.array([0], dtype=np.int32))
+        r0, r1 = 0, nrows
+    else:
+        partition = build_partition_from_active(
+            active_mask=dom.active_mask,
+            size=max(1, size),
+            strategy=mpi_cfg.decomposition,
+            min_rows_per_rank=mpi_cfg.min_rows_per_rank,
+        )
+        r0, r1 = partition.bounds(rank if size > 1 else 0)
 
     def _rebalance_particles(reason: str, step_idx: int, step_time_s: float) -> None:
         """Gather state, rebuild slabs with particle-aware weights, and resplit."""
         nonlocal partition, P_slab, Q_slab, particles, r0, r1, CN_slab, next_balance_time
         if not mpi_active or comm is None:
+            return
+
+        if particle_parallel:
+            counts_before = comm.allgather(int(particles.r.size))
+            if rank == 0:
+                logger.info(
+                    "Particle-parallel rebalance (%s) step=%d time=%.1fs counts=%s",
+                    reason,
+                    step_idx + 1,
+                    step_time_s,
+                    counts_before,
+                )
+            particles = rebalance_particles_even(comm, particles)
+            counts_after = comm.allgather(int(particles.r.size))
+            if rank == 0:
+                logger.info(
+                    "Particle-parallel rebalance completed: %s -> %s",
+                    counts_before,
+                    counts_after,
+                )
             return
 
         # Log current distribution.
@@ -412,12 +453,19 @@ def run_simulation(
         comm.Bcast(scal, root=0)  # execute statement
         cum_rain, cum_runoff, cum_outflow, elapsed_s0 = map(float, scal.tolist())  # set cum_rain, cum_runoff, cum_outflow, elapsed_s0
 
-        # Scatter slab fields.
-        P_slab = scatter_field_partition(comm, partition, P_full, nrows, ncols, np.float32)  # set P_slab
-        Q_slab = scatter_field_partition(comm, partition, Q_full, nrows, ncols, np.float32)  # set Q_slab
+        if particle_parallel:
+            P_slab = comm.bcast(P_full if P_full is not None else np.zeros((nrows, ncols), dtype=np.float32), root=0).astype(np.float32)
+            Q_slab = comm.bcast(Q_full if Q_full is not None else np.zeros((nrows, ncols), dtype=np.float32), root=0).astype(np.float32)
+            particles_all = particles_all if rank == 0 else empty_particles()
+            particles = rebalance_particles_even(comm, particles_all)  # distribute evenly
+            r0, r1 = 0, nrows  # ensure full-range indexing
+        else:
+            # Scatter slab fields.
+            P_slab = scatter_field_partition(comm, partition, P_full, nrows, ncols, np.float32)  # set P_slab
+            Q_slab = scatter_field_partition(comm, partition, Q_full, nrows, ncols, np.float32)  # set Q_slab
 
-        # Scatter particles by row ownership.
-        particles = scatter_particles_from_rank0(comm, partition, particles_all)  # set particles
+            # Scatter particles by row ownership.
+            particles = scatter_particles_from_rank0(comm, partition, particles_all)  # set particles
 
     if rank == 0:
         logger.debug("State arrays initialized with dtype P=%s Q=%s", P_slab.dtype, Q_slab.dtype)
@@ -447,6 +495,12 @@ def run_simulation(
         suffix = base.suffix or ".nc"
         return str(base.with_name(f"{base.stem}_{idx:04d}{suffix}"))
 
+    def _tag_rank(path: str) -> str:
+        """Return path suffixed with rank when io_mode='all'."""
+        base = Path(path)
+        suffix = base.suffix or ".nc"
+        return str(base.with_name(f"{base.stem}_rank{rank:04d}{suffix}"))
+
     def _prepare_output_target() -> tuple[str, str]:
         """Return (path, mode) for the next output write."""
         nonlocal output_file_initialized, rotation_index
@@ -458,7 +512,7 @@ def run_simulation(
                 logger.info("Rotating output NetCDF to %s (index=%04d)", path, idx)
                 if os.path.exists(path):
                     os.remove(path)
-            return path, "w"
+            return (path if io_rank0_only or size == 1 else _tag_rank(path)), "w"
 
         if not out_nc:
             raise ValueError("Output NetCDF path not set.")
@@ -467,9 +521,12 @@ def run_simulation(
             if rank == 0 and os.path.exists(out_nc):
                 os.remove(out_nc)
             output_file_initialized = True
-            return str(out_nc), "w"
+            path = str(out_nc)
+        else:
+            path = str(out_nc)
+            return path if io_rank0_only or size == 1 else _tag_rank(path), "a"
 
-        return str(out_nc), "a"
+        return path if io_rank0_only or size == 1 else _tag_rank(path), "w"
 
     def _flood_from_volume(volgrid: np.ndarray) -> np.ndarray:
         """Convert cell volumes to depth, masking inactive cells."""
@@ -507,14 +564,39 @@ def run_simulation(
             risk_field = _compute_risk_field(Q_slab, flood_depth)
             return flood_depth, risk_field
 
+        if particle_parallel:
+            vol_local = local_volgrid_from_particles_slab(particles, r0=0, r1=nrows, ncols=ncols, shared_cfg=shared_cfg)
+            if io_rank0_only:
+                vol_full = comm.reduce(vol_local, op=MPI.SUM, root=0)
+                if rank == 0:
+                    flood_depth = _flood_from_volume(vol_full)
+                    risk_field = _compute_risk_field(Q_slab, flood_depth)
+                    return flood_depth, risk_field
+                return None, None
+            vol_full = comm.allreduce(vol_local, op=MPI.SUM)
+            flood_depth = _flood_from_volume(vol_full)
+            risk_field = _compute_risk_field(Q_slab, flood_depth)
+            return flood_depth, risk_field
+
         volgrid_slab = local_volgrid_from_particles_slab(particles, r0=r0, r1=r1, ncols=ncols, shared_cfg=shared_cfg)
         vol_full = gather_field_partition_to_rank0(comm, partition, volgrid_slab, nrows, ncols)
         Q_full = gather_field_partition_to_rank0(comm, partition, Q_slab, nrows, ncols)
+        if io_rank0_only:
+            if rank == 0:
+                flood_depth = _flood_from_volume(vol_full)
+                risk_field = _compute_risk_field(Q_full, flood_depth)
+                return flood_depth, risk_field
+            return None, None
+
         if rank == 0:
             flood_depth = _flood_from_volume(vol_full)
             risk_field = _compute_risk_field(Q_full, flood_depth)
-            return flood_depth, risk_field
-        return None, None
+        else:
+            flood_depth = None
+            risk_field = None
+        flood_depth = comm.bcast(flood_depth, root=0)
+        risk_field = comm.bcast(risk_field, root=0)
+        return flood_depth, risk_field
 
     def _write_output(elapsed_s: float) -> bool:
         """Compute and write outputs for the given elapsed time."""
@@ -523,7 +605,8 @@ def run_simulation(
         out_path, mode = _prepare_output_target()
         time_hours = _output_time_hours(elapsed_s)
         flood_depth, risk_field = _gather_outputs_for_rank0()
-        if rank == 0 and flood_depth is not None and risk_field is not None:
+        should_write = (io_rank0_only and rank == 0) or (not io_rank0_only)
+        if should_write and flood_depth is not None and risk_field is not None:
             inundation_mask = np.where(
                 dom.active_mask & np.isfinite(flood_depth) & (flood_depth >= inundation_threshold_m), 1, 0
             ).astype(np.int8, copy=False)
@@ -769,12 +852,17 @@ def run_simulation(
             rain_full = None  # set rain_full
 
         if size > 1:  # check condition size > 1:
-            rain_slab_mm = scatter_field_partition(comm, partition, rain_full, nrows, ncols, np.float32)  # set rain_slab_mm
+            if particle_parallel:
+                rain_slab_mm = comm.bcast(rain_full, root=0).astype(np.float32, copy=False)  # set rain_slab_mm
+            else:
+                rain_slab_mm = scatter_field_partition(comm, partition, rain_full, nrows, ncols, np.float32)  # set rain_slab_mm
         else:
             rain_slab_mm = rain_full.astype(np.float32, copy=False)  # type: ignore[union-attr]
 
         # Compute rain volume injected this step (for diagnostics).
-        if np.isscalar(dom.cell_area_m2):  # check condition np.isscalar(dom.cell_area_m2):
+        if particle_parallel and size > 1 and rank != 0:
+            rain_vol_step_local = 0.0  # avoid double-counting shared rain fields
+        elif np.isscalar(dom.cell_area_m2):  # check condition np.isscalar(dom.cell_area_m2):
             rain_vol_step_local = float((rain_slab_mm / 1000.0).sum() * float(dom.cell_area_m2))  # set rain_vol_step_local
         else:  # fallback branch
             rain_vol_step_local = float(((rain_slab_mm / 1000.0) * dom.cell_area_m2[r0:r1, :]).sum())  # set rain_vol_step_local
@@ -800,17 +888,23 @@ def run_simulation(
         runoff_depth_m = dQ_mm / 1000.0  # set runoff_depth_m
 
         # Spawn new particles from incremental runoff.
-        newp, spawned_vol_local = spawn_particles_from_runoff_slab(  # set newp, spawned_vol_local
-            runoff_depth_m_slab=runoff_depth_m,  # set runoff_depth_m_slab
-            r0=r0,  # set r0
-            cell_area_m2=dom.cell_area_m2,  # set cell_area_m2
-            particle_vol_m3=particle_vol_m3,  # set particle_vol_m3
-            active_mask_global=dom.active_mask,  # set active_mask_global
-        )  # execute statement
+        if particle_parallel and size > 1 and rank != 0:
+            newp = empty_particles()
+            spawned_vol_local = 0.0
+        else:
+            newp, spawned_vol_local = spawn_particles_from_runoff_slab(  # set newp, spawned_vol_local
+                runoff_depth_m_slab=runoff_depth_m,  # set runoff_depth_m_slab
+                r0=r0,  # set r0
+                cell_area_m2=dom.cell_area_m2,  # set cell_area_m2
+                particle_vol_m3=particle_vol_m3,  # set particle_vol_m3
+                active_mask_global=dom.active_mask,  # set active_mask_global
+            )  # execute statement
         particles = concat_particles(particles, newp)  # set particles
         new_particles_local = int(newp.r.size)
         new_particles = comm.allreduce(new_particles_local, op=MPI.SUM) if size > 1 else new_particles_local
         total_spawned_particles += new_particles
+        if particle_parallel and mpi_active:
+            _rebalance_particles("rain_update", k, step_time_s)
 
         # Advect particles.
         advect_t0 = perf_counter()
@@ -831,7 +925,7 @@ def run_simulation(
         advection_t = perf_counter() - advect_t0
 
         # Migrate particles between slabs (MPI).
-        if size > 1:  # check condition size > 1:
+        if size > 1 and not particle_parallel:  # check condition size > 1:
             if metrics_enabled:
                 active_particles_before_migration = int(comm.allreduce(active_particles_before_migration, op=MPI.SUM))
                 dest = rank_of_row_partition(particles.r, partition)
@@ -942,15 +1036,44 @@ def run_simulation(
                     particles_all=particles,  # set particles_all
                 )  # execute statement
             else:  # fallback branch
-                P_full = gather_field_partition_to_rank0(comm, partition, P_slab, nrows, ncols)  # set P_full
-                Q_full = gather_field_partition_to_rank0(comm, partition, Q_slab, nrows, ncols)  # set Q_full
-                particles_all = gather_particles_to_rank0(comm, particles)  # set particles_all
-                if rank == 0:  # check condition rank == 0:
-                    save_restart_netcdf_rank0(  # execute statement
-                        out_path=str(rst_out),  # set out_path
-                        cfg=cfg,  # set cfg
-                        dom=dom,  # set dom
-                        elapsed_s=float(step_time_s),  # set elapsed_s
+                if particle_parallel:
+                    particles_all = gather_particles_to_rank0(comm, particles)
+                    if io_rank0_only and rank == 0:
+                        save_restart_netcdf_rank0(
+                            out_path=str(rst_out),
+                            cfg=cfg,
+                            dom=dom,
+                            elapsed_s=float(step_time_s),
+                            cum_rain_vol_m3=float(cum_rain),
+                            cum_runoff_vol_m3=float(cum_runoff),
+                            cum_outflow_vol_m3=float(cum_outflow),
+                            P_cum_mm_full=P_slab,
+                            Q_cum_mm_full=Q_slab,
+                            particles_all=particles_all,
+                        )
+                    elif not io_rank0_only:
+                        save_restart_netcdf_rank0(
+                            out_path=_tag_rank(str(rst_out)),
+                            cfg=cfg,
+                            dom=dom,
+                            elapsed_s=float(step_time_s),
+                            cum_rain_vol_m3=float(cum_rain),
+                            cum_runoff_vol_m3=float(cum_runoff),
+                            cum_outflow_vol_m3=float(cum_outflow),
+                            P_cum_mm_full=P_slab,
+                            Q_cum_mm_full=Q_slab,
+                            particles_all=particles,
+                        )
+                else:
+                    P_full = gather_field_partition_to_rank0(comm, partition, P_slab, nrows, ncols)  # set P_full
+                    Q_full = gather_field_partition_to_rank0(comm, partition, Q_slab, nrows, ncols)  # set Q_full
+                    particles_all = gather_particles_to_rank0(comm, particles)  # set particles_all
+                    if rank == 0:  # check condition rank == 0:
+                        save_restart_netcdf_rank0(  # execute statement
+                            out_path=str(rst_out),  # set out_path
+                            cfg=cfg,  # set cfg
+                            dom=dom,  # set dom
+                            elapsed_s=float(step_time_s),  # set elapsed_s
                         cum_rain_vol_m3=float(cum_rain),  # set cum_rain_vol_m3
                         cum_runoff_vol_m3=float(cum_runoff),  # set cum_runoff_vol_m3
                         cum_outflow_vol_m3=float(cum_outflow),  # set cum_outflow_vol_m3
@@ -1065,13 +1188,17 @@ def run_simulation(
                         "world_size": int(world_size),
                         "decomposition": mpi_cfg.decomposition,
                         "min_rows_per_rank": int(mpi_cfg.min_rows_per_rank),
-                        "partition": partition.to_dict(),
-                    },
-                    "shared_memory": {
-                        "enabled": bool(shared_cfg.enabled),
-                        "auto_enabled": bool(shared_cfg.auto_enabled),
-                        "workers": int(shared_cfg.workers),
-                        "chunk_size": int(shared_cfg.chunk_size),
+                    "partition": partition.to_dict(),
+                },
+                "parallelization": {
+                    "schema": parallel_schema,
+                    "io_mode": io_mode,
+                },
+                "shared_memory": {
+                    "enabled": bool(shared_cfg.enabled),
+                    "auto_enabled": bool(shared_cfg.auto_enabled),
+                    "workers": int(shared_cfg.workers),
+                    "chunk_size": int(shared_cfg.chunk_size),
                         "min_particles_per_worker": int(shared_cfg.min_particles_per_worker),
                     },
                     "device": device,

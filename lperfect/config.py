@@ -109,6 +109,10 @@ def default_config() -> Dict[str, Any]:  # define function default_config
         },  # execute statement
         "compute": {  # execute statement
             "device": "cpu",  # execute statement
+            "parallelization": {  # execute statement
+                "schema": "slab",  # execute statement
+                "io": "rank0",  # execute statement
+            },  # execute statement
             "mpi": {  # execute statement
                 "enabled": None,  # auto-enable only when launched under MPI  # execute statement
                 "decomposition": "auto",  # execute statement

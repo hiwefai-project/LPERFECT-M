@@ -189,6 +189,11 @@ def main() -> None:
         mpi_cfg_overrides["decomposition"] = args.mpi_decomposition
     if args.mpi_min_rows is not None:
         mpi_cfg_overrides["min_rows_per_rank"] = args.mpi_min_rows
+    parallel_cfg_overrides = cfg.setdefault("compute", {}).setdefault("parallelization", {})
+    if args.parallel_schema is not None:
+        parallel_cfg_overrides["schema"] = args.parallel_schema
+    if args.parallel_io is not None:
+        parallel_cfg_overrides["io"] = args.parallel_io
     if args.travel_time_mode is not None:
         cfg["model"]["travel_time_mode"] = args.travel_time_mode
     if args.travel_time_hill_vel is not None:

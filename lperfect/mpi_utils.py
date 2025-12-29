@@ -440,3 +440,42 @@ def scatter_particles_from_rank0(comm, plan: PartitionPlan, p_all: Optional[Part
     if recvflat.size % 4 != 0:
         raise RuntimeError("Received particle payload not divisible by 4")
     return unpack_particles_from_float64(recvflat.reshape((-1, 4)))
+
+
+
+def rebalance_particles_even(comm, p_local: Particles) -> Particles:
+    """Evenly redistribute particles across ranks (count-balanced, location-agnostic)."""
+    rank = comm.Get_rank()  # set rank
+    size = comm.Get_size()  # set size
+
+    local_count = int(p_local.r.size)  # set local_count
+    total_count = int(comm.allreduce(local_count, op=MPI.SUM))  # set total_count
+    if total_count == 0:  # check condition total_count == 0:
+        return empty_particles()  # return empty_particles()
+
+    particles_all = gather_particles_to_rank0(comm, p_local)  # collect full set on rank0
+
+    counts = np.full(size, total_count // max(1, size), dtype=np.int64)  # set counts
+    counts[: (total_count % max(1, size))] += 1  # execute statement
+
+    if rank == 0:  # check condition rank == 0:
+        flat = pack_particles_to_float64(particles_all).ravel()  # set flat
+        sendbuf_by_rank: list[np.ndarray] = []  # set sendbuf_by_rank
+        offset = 0  # set offset
+        for c in counts:  # loop over c in counts:
+            nvals = int(c) * 4  # set nvals
+            if nvals > 0:  # check condition nvals > 0:
+                sendbuf_by_rank.append(flat[offset : offset + nvals])  # execute statement
+            else:  # fallback branch
+                sendbuf_by_rank.append(np.zeros(0, dtype=np.float64))  # execute statement
+            offset += nvals  # execute statement
+    else:  # fallback branch
+        sendbuf_by_rank = [np.zeros(0, dtype=np.float64) for _ in range(size)]  # set sendbuf_by_rank
+
+    recvflat = alltoallv_float64(comm, sendbuf_by_rank)  # exchange evenly sized chunks
+    if recvflat.size == 0:  # check condition recvflat.size == 0:
+        return empty_particles()  # return empty_particles()
+    if recvflat.size % 4 != 0:  # check condition recvflat.size % 4 != 0:
+        raise RuntimeError("Even rebalance payload not divisible by 4")  # raise RuntimeError
+
+    return unpack_particles_from_float64(recvflat.reshape((-1, 4)))  # unpack received particles

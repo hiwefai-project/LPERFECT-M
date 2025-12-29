@@ -40,6 +40,18 @@ def parse_args() -> argparse.Namespace:  # define function parse_args
         help="Minimum number of rows per MPI rank (prevents tiny slabs).",
     )  # execute statement
     ap.add_argument(
+        "--parallel-schema",
+        default=None,
+        choices=["slab", "particles"],
+        help="Parallelization schema: slab (domain slabs) or particles (even particle distribution).",
+    )  # execute statement
+    ap.add_argument(
+        "--parallel-io",
+        default=None,
+        choices=["rank0", "all"],
+        help="I/O strategy: rank0 only or independent files per rank.",
+    )  # execute statement
+    ap.add_argument(
         "--travel-time-mode",
         default=None,
         choices=["fixed", "auto"],

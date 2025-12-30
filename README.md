@@ -20,6 +20,7 @@ Project website: https://www.hiwefai-project.org
 - Some remarks about the LPERFECT parallelization schema for MPI and GPU [`link`](docs/parallelization_schema.md)
 - Detailed guide to preparing **domain** and **rainfall forcing** NetCDF inputs (with GDAL/CDO/NCO examples and Italy-oriented datasets) [link](docs/data.md)
 - How to use GPT-friendly metrics JSON outputs with AI assistants [`link`](docs/ai.md)
+- Installation guide covering development, workstation, and HPC workflows [`link`](docs/installation.md)
 - Step-by-step real-world walkthrough:
   - **Italy, December 23rd 2025 intense rain event** [`link`](docs/use_case_01.md)
   - **Italy, March 14th 2025 severe rainfall event** [`link`](docs/use_case_02.md)
@@ -36,6 +37,8 @@ Project website: https://www.hiwefai-project.org
 ```bash
 pip install -r requirements.txt
 ```
+
+See the full installation guide in [`docs/installation.md`](docs/installation.md) for pip and Conda workflows across development, workstation, and HPC environments.
 
 MPI runs require an MPI runtime (OpenMPI / MPICH) and `mpi4py`.
 Optional GPU acceleration requires CuPy and can be enabled with `--device gpu`.

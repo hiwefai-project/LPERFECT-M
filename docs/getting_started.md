@@ -137,7 +137,14 @@ Requirements:
 - Include `latitude(latitude)` and `longitude(longitude)` coordinates
 - Consistent metadata and no misaligned grids
 
-For a ready-made CLI workflow, see [`docs/make_domains.md`](make_domain.md).
+Use the CLI helper to bundle your rasters:
+
+```bash
+python utils/make_domain.py --dem dem_utm_100m.tif --cn cn_utm_100m.tif \
+  --d8 d8_utm_100m.tif --mask channel_mask_100m.tif --output domain.nc
+```
+
+For a detailed walkthrough, see [`docs/make_domains.md`](make_domain.md).
 
 ---
 
@@ -180,6 +187,17 @@ Since rainfall has a time dimension:
 
 Ensure simulation time matches rainfall timestamps.
 
+### 5.4 Convert radar data to rainfall NetCDF
+
+Regrid weather-radar GeoTIFFs to the model grid and produce a CF-compliant rainfall input:
+
+```bash
+python utils/wr_to_rainrate.py \
+  --input radar_20250325T1400Z.tif,radar_20250325T1405Z.tif \
+  --time 2025-03-25T14:00:00Z --dt 300 \
+  --domain domain.nc --output rain_rate.nc
+```
+
 ---
 
 ## 6. Configuration
@@ -206,17 +224,13 @@ Prepare the configuration file.
 cp config.json.sample config.json 
 ```
 
-### Serial execution
+Run the model **without parallelization**—no MPI launchers, thread pools, or GPU options are needed for the baseline workflow:
+
 ```bash
 python main.py --config config.json --out-nc flood.nc
 ```
 
-### Parallel execution (MPI)
-```bash
-mpirun -np 8 python main.py --config config.json --out-nc flood.nc
-```
-
-Rank 0 handles NetCDF I/O in parallel runs.
+If your environment exports thread-related variables (e.g., `OMP_NUM_THREADS`), set them to `1` to keep execution single-threaded.
 
 ---
 
@@ -227,10 +241,13 @@ The model produces a NetCDF file containing fields such as:
 - `risk_index(time, latitude, longitude)`
 - `time(time)` coordinate (hours since 1900-01-01 00:00:0.0)
 
-These can be visualized using:
-- Python (`xarray`, `matplotlib`)
-- QGIS
-- Panoply
+Visualize the results directly with the provided plotting script:
+
+```bash
+python utils/output_plot.py --flood flood.nc --domain domain.nc --out flood.png
+```
+
+You can still explore the NetCDF in tools such as Python (`xarray`, `matplotlib`), QGIS, or Panoply.
 
 ---
 

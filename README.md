@@ -27,7 +27,7 @@ Project website: https://www.hiwefai-project.org
   - **Campania Region, September 23rd 2025 severe rainfall event** [`link`](docs/use_case_03.md)
 - Utilities:
   - Making the model domain quick and easy [`link`](docs/make_domain.md)
-  - Converting a VMI radar image to rain rate stored in a NetCDF file [`link`](docs/wr_to_rain.md)
+  - Converting VMI radar images to rain rate stored in a NetCDF file (supports `--input-dir` for alphabetical ingestion) [`link`](docs/wr_to_rain.md)
   - Map model results on geographical features (i.e., municipality areas) [`link`](docs/output_to_geo.md)
   - Rise alert notification in case of threshold overpassing [`link`](docs/alert_generator.md)
   - Running the model on Slurm HPC systems [`link`](docs/hpc.md)

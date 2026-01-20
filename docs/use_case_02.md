@@ -44,6 +44,7 @@ python utils/wr_to_rainrate.py \
   --institution "Italian Department of Civil Protection" \
   --source "https://data.meteo.uniparthenope.it/instruments/rdr0"
 ```
+You can replace the comma-separated list with `--input-dir data/radar/20250314` to read the GeoTIFFs in alphabetical order.
 - `--time` is the timestamp of the first image (00:00 UTC).
 - `--dt 600` reflects the 10-minute cadence.
 - The script reads reflectivity (dBZ), converts it to rain rate (mm/h) with the default Z–R relationship (`Z = 200 * R^1.6`), reprojects/interpolates to the domain grid, and writes `rain_rate(time, latitude, longitude)` with CF metadata.

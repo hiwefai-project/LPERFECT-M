@@ -1,6 +1,6 @@
 # Weather radar VMI GeoTIFF to rainfall NetCDF
 
-`utils/wr_to_rain.py` converts a single-band weather radar VMI GeoTIFF (reflectivity in dBZ) into a CF-compliant rainfall NetCDF file that can be used as a rain forcing input for LPERFECT. The converter normalizes raster dimensions, applies a Z–R relationship to compute rain rates, attaches CF metadata, and writes a `rain_rate` variable with a time axis aligned with `cdl/rain_time_dependent.cdl`.
+`utils/wr_to_rainrate.py` converts a single-band weather radar VMI GeoTIFF (reflectivity in dBZ) into a CF-compliant rainfall NetCDF file that can be used as a rain forcing input for LPERFECT. The converter normalizes raster dimensions, applies a Z–R relationship to compute rain rates, attaches CF metadata, and writes a `rain_rate` variable with a time axis aligned with `cdl/rain_time_dependent.cdl`.
 
 ## What the script produces
 
@@ -20,7 +20,7 @@ If you see an error about missing `rioxarray`, install the missing dependencies 
 
 ## Inputs and behavior
 
-- **Input rasters:** comma-separated list of single-band GeoTIFFs (band 1 is used if multiple exist).
+- **Input rasters:** comma-separated list of single-band GeoTIFFs (band 1 is used if multiple exist) or a directory containing GeoTIFFs; directory inputs are read in alphabetical order.
 - **Dimensions:** accepts `x/y` or `latitude/longitude` and normalizes to `latitude/longitude`.
 - **Fill values:** uses `_FillValue` or `missing_value` from the raster when present; otherwise uses the CLI `--fill-value` fallback.
 - **Time:** use `--time` to provide an ISO-8601 timestamp for the first raster. The script steps forward by `--dt` seconds for each input.
@@ -41,7 +41,7 @@ with `Z = 10^(dBZ / 10)`. The defaults (`a=200`, `b=1.6`) correspond to a Marsha
 ## Command-line usage
 
 ```bash
-python utils/wr_to_rain.py \
+python utils/wr_to_rainrate.py \
   --input PATH/TO/input_0000.tif,PATH/TO/input_0005.tif \
   --output PATH/TO/output.nc \
   --time 2024-06-01T12:00:00Z \
@@ -61,6 +61,7 @@ python utils/wr_to_rain.py \
 ### Arguments
 
 - `--input`: Comma-separated list of input VMI GeoTIFFs, in time order.
+- `--input-dir`: Directory containing input VMI GeoTIFFs (alphabetical order).
 - `--output`: Path for the output NetCDF.
 - `--time`: ISO-8601 timestamp for the first raster.
 - `--dt`: Seconds between consecutive inputs.
@@ -80,7 +81,7 @@ python utils/wr_to_rain.py \
 Convert a radar GeoTIFF into a rain forcing file with explicit metadata:
 
 ```bash
-python utils/wr_to_rain.py \
+python utils/wr_to_rainrate.py \
   --input data/radar/vmi_20240601_1200.tif,data/radar/vmi_20240601_1205.tif \
   --output data/rain/rain_20240601_1200.nc \
   --time 2024-06-01T12:00:00Z \
@@ -95,3 +96,5 @@ python utils/wr_to_rain.py \
 ```
 
 The resulting `rain_20240601_1200.nc` is ready to be referenced in your LPERFECT configuration as a rainfall forcing dataset.
+
+You can also point at a directory of GeoTIFFs using `--input-dir`; files are read alphabetically to define the time order.

@@ -115,6 +115,21 @@ def _parse_input_list(value: str) -> list[str]:
     return items
 
 
+def _input_files_from_dir(value: str) -> list[str]:
+    resolved = Path(value)
+    if not resolved.exists():
+        raise FileNotFoundError(f"Input directory not found: {resolved}")
+    if not resolved.is_dir():
+        raise NotADirectoryError(f"Input path is not a directory: {resolved}")
+    files = sorted(
+        [path for path in resolved.iterdir() if path.is_file()],
+        key=lambda path: path.name,
+    )
+    if not files:
+        raise ValueError(f"No input files found in directory: {resolved}")
+    return [str(path) for path in files]
+
+
 def _normalize_dims(da: xr.DataArray) -> xr.DataArray:
     if "latitude" in da.dims and "longitude" in da.dims:
         return da.transpose("latitude", "longitude")
@@ -336,11 +351,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Convert weather radar VMI GeoTIFFs to a CF-compliant rainfall NetCDF."
     )
-    parser.add_argument(
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument(
         "--input",
-        required=True,
         type=_parse_input_list,
         help="Comma-separated list of input VMI GeoTIFFs (time-ordered).",
+    )
+    input_group.add_argument(
+        "--input-dir",
+        dest="input_dir",
+        help="Directory containing input VMI GeoTIFFs (alphabetically ordered).",
     )
     parser.add_argument("--output", required=True, help="Path to output NetCDF")
     parser.add_argument(
@@ -411,8 +431,10 @@ def main() -> None:
     if args.dt_seconds <= 0:
         raise ValueError("--dt must be a positive number of seconds.")
 
+    input_paths = args.input if args.input is not None else _input_files_from_dir(args.input_dir)
+
     convert_vmi_to_rain(
-        input_paths=args.input,
+        input_paths=input_paths,
         output_path=args.output,
         timestamp=args.timestamp,
         dt_seconds=args.dt_seconds,

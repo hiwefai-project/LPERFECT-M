@@ -198,6 +198,8 @@ python utils/wr_to_rainrate.py \
   --domain domain.nc --output rain_rate.nc
 ```
 
+To ingest all GeoTIFFs in a directory, use `--input-dir PATH/TO/rasters`; files are read in alphabetical order.
+
 ---
 
 ## 6. Configuration

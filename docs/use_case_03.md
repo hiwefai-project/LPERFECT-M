@@ -44,6 +44,7 @@ python utils/wr_to_rainrate.py \
   --institution "Italian Department of Civil Protection" \
   --source "https://data.meteo.uniparthenope.it/instruments/rdr0"
 ```
+You can replace the comma-separated list with `--input-dir data/radar/20250923` to read the GeoTIFFs in alphabetical order.
 - `--time` is the timestamp of the first image (03:00 UTC).
 - `--dt 600` reflects the 10-minute cadence.
 

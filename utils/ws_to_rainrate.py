@@ -1,0 +1,442 @@
+#!/usr/bin/env python3
+"""Convert weather-station CSV data into CF-compliant rainfall NetCDF."""
+from __future__ import annotations
+
+import argparse
+import csv
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import importlib.util
+import logging
+import math
+from pathlib import Path
+from typing import Iterable, Iterator, Sequence
+
+import numpy as np
+import xarray as xr
+
+
+CF_CONVENTIONS = "CF-1.10"
+TIME_UNITS = "hours since 1900-01-01 00:00:0.0"
+LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class StationAggregate:
+    """Aggregate rain-rate samples for a station within a time interval."""
+
+    station_id: str
+    longitude: float
+    latitude: float
+    total: float
+    count: int
+
+    def add(self, value: float) -> None:
+        """Add a rain-rate sample to the aggregate."""
+        self.total += value
+        self.count += 1
+
+    @property
+    def mean(self) -> float:
+        """Return the average rain rate for the interval."""
+        return self.total / self.count if self.count > 0 else float("nan")
+
+
+def _setup_logging(level: str) -> None:
+    """Configure logging for console output."""
+    logging.basicConfig(
+        level=getattr(logging, level.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+
+
+def _require_pykrige() -> None:
+    """Ensure PyKrige is available before running kriging interpolation."""
+    if importlib.util.find_spec("pykrige") is None:
+        raise ImportError(
+            "PyKrige is required for kriging interpolation. "
+            "Install it with 'pip install pykrige'."
+        )
+
+
+def _parse_time(value: str) -> datetime:
+    """Parse ISO-8601 timestamps and normalize to UTC."""
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    dt = datetime.fromisoformat(text)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _time_to_seconds(dt: datetime) -> float:
+    """Convert a datetime to seconds since 1900-01-01 UTC."""
+    base = datetime(1900, 1, 1, tzinfo=timezone.utc)
+    return (dt - base).total_seconds()
+
+
+def _seconds_to_hours(seconds: float) -> float:
+    """Convert seconds since 1900-01-01 to hours for CF time units."""
+    return seconds / 3600.0
+
+
+def _input_paths(value: str) -> list[Path]:
+    """Resolve input paths from a file or directory argument."""
+    path = Path(value)
+    if not path.exists():
+        raise FileNotFoundError(f"Input path not found: {path}")
+    if path.is_dir():
+        csv_files = sorted([child for child in path.iterdir() if child.is_file()])
+        if not csv_files:
+            raise ValueError(f"No CSV files found in directory: {path}")
+        return csv_files
+    if path.is_file():
+        return [path]
+    raise ValueError(f"Unsupported input path: {path}")
+
+
+def _load_csv_rows(paths: Sequence[Path]) -> list[dict[str, str]]:
+    """Load CSV rows from one or more CSV files."""
+    rows: list[dict[str, str]] = []
+    for csv_path in paths:
+        with csv_path.open("r", newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            if reader.fieldnames is None:
+                raise ValueError(f"CSV file has no header: {csv_path}")
+            rows.extend(reader)
+    if not rows:
+        raise ValueError("No CSV rows found in input files.")
+    return rows
+
+
+def _iter_records(rows: Iterable[dict[str, str]]) -> Iterator[tuple[str, datetime, float, float, float]]:
+    """Yield parsed records from CSV row dictionaries."""
+    required = {
+        "WEATHER_STATION_ID",
+        "ISO_8601_TIMESTAMP",
+        "LONGITUDE",
+        "LATITUDE",
+        "RAINRATE_VALUE",
+    }
+    for row in rows:
+        missing = required - set(row)
+        if missing:
+            raise ValueError(f"CSV row missing columns: {sorted(missing)}")
+        station_id = row["WEATHER_STATION_ID"].strip()
+        timestamp = _parse_time(row["ISO_8601_TIMESTAMP"])
+        longitude = float(row["LONGITUDE"])
+        latitude = float(row["LATITUDE"])
+        rainrate = float(row["RAINRATE_VALUE"])
+        yield station_id, timestamp, longitude, latitude, rainrate
+
+
+def _build_time_bins(
+    records: Iterable[tuple[str, datetime, float, float, float]],
+    interval_seconds: float,
+) -> tuple[float, dict[int, dict[str, StationAggregate]]]:
+    """Group station samples into interval bins with station-level averages."""
+    if interval_seconds <= 0:
+        raise ValueError("Interval seconds must be positive.")
+    entries = list(records)
+    if not entries:
+        raise ValueError("No valid station records to process.")
+    seconds_since = np.array([_time_to_seconds(item[1]) for item in entries], dtype=float)
+    start_seconds = math.floor(seconds_since.min() / interval_seconds) * interval_seconds
+    bins: dict[int, dict[str, StationAggregate]] = {}
+    for station_id, timestamp, longitude, latitude, rainrate in entries:
+        if not math.isfinite(rainrate):
+            LOGGER.warning("Skipping non-finite rainrate for station %s", station_id)
+            continue
+        seconds = _time_to_seconds(timestamp)
+        bin_index = int((seconds - start_seconds) // interval_seconds)
+        bucket = bins.setdefault(bin_index, {})
+        aggregate = bucket.get(station_id)
+        if aggregate is None:
+            aggregate = StationAggregate(
+                station_id=station_id,
+                longitude=longitude,
+                latitude=latitude,
+                total=0.0,
+                count=0,
+            )
+            bucket[station_id] = aggregate
+        if not math.isclose(aggregate.longitude, longitude) or not math.isclose(aggregate.latitude, latitude):
+            LOGGER.warning("Station %s has changing coordinates; using first occurrence.", station_id)
+        aggregate.add(rainrate)
+    if not bins:
+        raise ValueError("All rain-rate samples were invalid or filtered out.")
+    return start_seconds, bins
+
+
+def _load_domain(domain_path: str) -> xr.Dataset:
+    """Load the domain NetCDF for latitude/longitude coordinates."""
+    resolved = Path(domain_path)
+    if not resolved.exists():
+        raise FileNotFoundError(f"Domain NetCDF not found: {resolved}")
+    return xr.open_dataset(resolved)
+
+
+def _domain_coords(domain: xr.Dataset) -> tuple[np.ndarray, np.ndarray]:
+    """Extract latitude and longitude arrays from the domain dataset."""
+    if "latitude" not in domain or "longitude" not in domain:
+        raise ValueError("Domain dataset must define latitude and longitude variables.")
+    lat_values = np.asarray(domain["latitude"].values, dtype=float)
+    lon_values = np.asarray(domain["longitude"].values, dtype=float)
+    if lat_values.ndim != 1 or lon_values.ndim != 1:
+        raise ValueError("Domain latitude and longitude must be 1D arrays.")
+    return lat_values, lon_values
+
+
+def _domain_crs_attrs(domain: xr.Dataset) -> dict[str, str]:
+    """Extract CRS attributes from the domain, if present."""
+    if "crs" not in domain:
+        return {}
+    return {str(key): str(value) for key, value in domain["crs"].attrs.items()}
+
+
+def _krige_grid(
+    longitudes: np.ndarray,
+    latitudes: np.ndarray,
+    values: np.ndarray,
+    grid_longitudes: np.ndarray,
+    grid_latitudes: np.ndarray,
+    variogram_model: str,
+) -> np.ndarray:
+    """Perform ordinary kriging over the domain grid."""
+    _require_pykrige()
+    from pykrige.ok import OrdinaryKriging
+
+    kriging = OrdinaryKriging(
+        longitudes,
+        latitudes,
+        values,
+        variogram_model=variogram_model,
+        verbose=False,
+        enable_plotting=False,
+    )
+    grid, _ = kriging.execute("grid", grid_longitudes, grid_latitudes)
+    return np.asarray(grid, dtype=float)
+
+
+def _interpolate_interval(
+    aggregates: dict[str, StationAggregate],
+    grid_longitudes: np.ndarray,
+    grid_latitudes: np.ndarray,
+    variogram_model: str,
+    fill_value: float,
+) -> np.ndarray:
+    """Interpolate station rain rates for a single time interval."""
+    if not aggregates:
+        return np.full((grid_latitudes.size, grid_longitudes.size), fill_value, dtype=float)
+    lons = np.array([agg.longitude for agg in aggregates.values()], dtype=float)
+    lats = np.array([agg.latitude for agg in aggregates.values()], dtype=float)
+    vals = np.array([agg.mean for agg in aggregates.values()], dtype=float)
+    if lons.size < 3:
+        LOGGER.warning("Insufficient stations (%s) for kriging; using mean fill.", lons.size)
+        return np.full(
+            (grid_latitudes.size, grid_longitudes.size),
+            float(np.nanmean(vals)),
+            dtype=float,
+        )
+    grid = _krige_grid(lons, lats, vals, grid_longitudes, grid_latitudes, variogram_model)
+    grid = np.where(np.isfinite(grid), grid, fill_value)
+    return grid.astype(np.float32)
+
+
+def _build_rain_dataset(
+    time_hours: np.ndarray,
+    rain_rate: np.ndarray,
+    latitudes: np.ndarray,
+    longitudes: np.ndarray,
+    crs_attrs: dict[str, str],
+    fill_value: float,
+    source_name: str,
+    institution: str,
+    source: str,
+    history: str,
+) -> xr.Dataset:
+    """Construct the CF-compliant rainfall dataset."""
+    dataset = xr.Dataset()
+    dataset["time"] = ("time", time_hours.astype(np.float64))
+    dataset["time"].attrs.update(
+        {
+            "description": "Time",
+            "long_name": "time",
+            "units": TIME_UNITS,
+        }
+    )
+    dataset["latitude"] = ("latitude", latitudes.astype(np.float32))
+    dataset["latitude"].attrs.update(
+        {
+            "description": "Latitude",
+            "long_name": "latitude",
+            "units": "degrees_north",
+        }
+    )
+    dataset["longitude"] = ("longitude", longitudes.astype(np.float32))
+    dataset["longitude"].attrs.update(
+        {
+            "description": "Longitude",
+            "long_name": "longitude",
+            "units": "degrees_east",
+        }
+    )
+    dataset["crs"] = xr.DataArray(0, attrs=crs_attrs)
+    dataset["rain_rate"] = (
+        ("time", "latitude", "longitude"),
+        rain_rate.astype(np.float32),
+    )
+    dataset["rain_rate"].attrs.update(
+        {
+            "long_name": "rainfall_rate",
+            "standard_name": "rainfall_rate",
+            "units": "mm h-1",
+            "grid_mapping": "crs",
+            "_FillValue": fill_value,
+        }
+    )
+    dataset.attrs.update(
+        {
+            "Conventions": CF_CONVENTIONS,
+            "title": f"{source_name} rainfall forcing",
+            "institution": institution,
+            "source": source,
+            "history": history,
+        }
+    )
+    return dataset
+
+
+def _build_history() -> str:
+    """Create a history string for the NetCDF output."""
+    timestamp = datetime.now(timezone.utc).isoformat()
+    return f"{timestamp}: produced/ingested"
+
+
+def main() -> None:
+    """CLI entry point."""
+    parser = argparse.ArgumentParser(
+        description="Convert weather station CSV data into CF-compliant rainfall NetCDF.",
+    )
+    parser.add_argument(
+        "input",
+        help="CSV file or directory with CSV files.",
+    )
+    parser.add_argument(
+        "--output",
+        required=True,
+        help="Output NetCDF path.",
+    )
+    parser.add_argument(
+        "--domain",
+        required=True,
+        help="Domain NetCDF path (matches cdl/domain.cdl).",
+    )
+    parser.add_argument(
+        "--interval",
+        type=float,
+        required=True,
+        help="Time interval in seconds for grouping station data.",
+    )
+    parser.add_argument(
+        "--source-name",
+        default="Stations",
+        help="Source name for the output title.",
+    )
+    parser.add_argument(
+        "--institution",
+        default="Unknown",
+        help="Institution metadata for the output NetCDF.",
+    )
+    parser.add_argument(
+        "--source",
+        default="stations",
+        help="Source metadata string.",
+    )
+    parser.add_argument(
+        "--grid-mapping-name",
+        default=None,
+        help="Override grid_mapping_name for the CRS variable.",
+    )
+    parser.add_argument(
+        "--epsg",
+        default=None,
+        help="Override EPSG code for the CRS variable (e.g., EPSG:4326).",
+    )
+    parser.add_argument(
+        "--fill-value",
+        type=float,
+        default=-9999.0,
+        help="Fill value for missing rain rates.",
+    )
+    parser.add_argument(
+        "--variogram-model",
+        default="spherical",
+        help="PyKrige variogram model (e.g., linear, spherical, exponential).",
+    )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        help="Logging level (default: INFO).",
+    )
+    args = parser.parse_args()
+
+    _setup_logging(args.log_level)
+
+    LOGGER.info("Reading input CSVs from %s", args.input)
+    input_paths = _input_paths(args.input)
+    rows = _load_csv_rows(input_paths)
+
+    LOGGER.info("Parsing weather station records")
+    records = list(_iter_records(rows))
+
+    LOGGER.info("Grouping records into %s-second intervals", args.interval)
+    start_seconds, bins = _build_time_bins(records, args.interval)
+
+    LOGGER.info("Loading domain grid from %s", args.domain)
+    domain = _load_domain(args.domain)
+    latitudes, longitudes = _domain_coords(domain)
+    crs_attrs = _domain_crs_attrs(domain)
+    if args.grid_mapping_name is not None:
+        crs_attrs["grid_mapping_name"] = args.grid_mapping_name
+    if args.epsg is not None:
+        crs_attrs["epsg_code"] = args.epsg
+
+    LOGGER.info("Interpolating %s time intervals", len(bins))
+    time_indices = sorted(bins.keys())
+    time_hours: list[float] = []
+    rain_fields: list[np.ndarray] = []
+    for index in time_indices:
+        interval_seconds = start_seconds + index * args.interval
+        time_hours.append(_seconds_to_hours(interval_seconds))
+        field = _interpolate_interval(
+            bins[index],
+            longitudes,
+            latitudes,
+            args.variogram_model,
+            args.fill_value,
+        )
+        rain_fields.append(field)
+
+    rain_rate = np.stack(rain_fields, axis=0)
+    dataset = _build_rain_dataset(
+        time_hours=np.array(time_hours, dtype=float),
+        rain_rate=rain_rate,
+        latitudes=latitudes,
+        longitudes=longitudes,
+        crs_attrs=crs_attrs,
+        fill_value=args.fill_value,
+        source_name=args.source_name,
+        institution=args.institution,
+        source=args.source,
+        history=_build_history(),
+    )
+
+    output_path = Path(args.output)
+    LOGGER.info("Writing rainfall NetCDF to %s", output_path)
+    dataset.to_netcdf(output_path)
+
+
+if __name__ == "__main__":
+    main()

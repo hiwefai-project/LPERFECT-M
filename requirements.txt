@@ -7,6 +7,8 @@ matplotlib>=3.8.0
 tqdm>=4.66.0
 # Optional (linear interpolation support)
 scipy>=1.10.0
+# Optional (kriging interpolation support)
+pykrige>=1.7.0
 # Optional (GPU acceleration)
 #cupy>=12.0.0
 # Optional (GeoTIFF input support)

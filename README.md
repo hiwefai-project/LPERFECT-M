@@ -16,6 +16,7 @@ Project website: https://www.hiwefai-project.org
 - A ready-to-go recipe to make the LPERFECT model up and running [`link`](docs/getting_started.md)
 - Detailed information about how to configure the LPERFECT model [`link`](docs/configure.md)
 - Description in depth how the model works [`link`](docs/model_description.md)
+- Summary about rain forcing metodologies [`link`](docs/rain_forcing.md)
 - Running nested domains (e.g., 90 m national + 30 m regional + 10 m city) via multi-domain configs is supported while keeping the same heterogeneous parallelization schema.
 - Some remarks about the LPERFECT parallelization schema for MPI and GPU [`link`](docs/parallelization_schema.md)
 - Detailed guide to preparing **domain** and **rainfall forcing** NetCDF inputs (with GDAL/CDO/NCO examples and Italy-oriented datasets) [link](docs/data.md)
@@ -27,10 +28,12 @@ Project website: https://www.hiwefai-project.org
   - **Campania Region, September 23rd 2025 severe rainfall event** [`link`](docs/use_case_03.md)
 - Utilities:
   - Making the model domain quick and easy [`link`](docs/make_domain.md)
-  - Converting VMI radar images to rain rate stored in a NetCDF file (supports `--input-dir` for alphabetical ingestion) [`link`](docs/wr_to_rain.md)
   - Map model results on geographical features (i.e., municipality areas) [`link`](docs/output_to_geo.md)
   - Rise alert notification in case of threshold overpassing [`link`](docs/alert_generator.md)
   - Running the model on Slurm HPC systems [`link`](docs/hpc.md)
+  - Converting VMI radar images to rain rate stored in a NetCDF file (supports `--input-dir` for alphabetical ingestion) [`link`](docs/wr_to_rain.md)
+  - Converting WRF from meteo@uniparthenope data to rain rate stored in a NetCDF file [`link`](docs/meteouniparthenope-wrf_to_rainrate.md)
+  - Converting weather station data (measured or predicted) to rain rate stored in a NetCDF file (time aggregation, Kriging interpolation) [`link`](docs/ws_to_rainrate.md)
 
 ## Installation
 

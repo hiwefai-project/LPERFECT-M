@@ -38,9 +38,14 @@ python utils/ws_to_rainrate.py \
   --institution "Your Institute" \
   --source "station gauge network" \
   --variogram-model spherical \
+  --buffer-meters 5000 \
   --fill-value -9999 \
   --log-level INFO
 ```
+
+When `--buffer-meters` is provided, the script computes a bounding box around all
+stations using the buffer distance and runs kriging only inside that box. Grid
+cells outside the box are set to 0 rain rate.
 
 ### Arguments
 
@@ -55,6 +60,8 @@ python utils/ws_to_rainrate.py \
 - `--epsg`: Override the EPSG code (e.g., `EPSG:4326`).
 - `--fill-value`: Fill value for missing rain rates.
 - `--variogram-model`: PyKrige variogram model (e.g., `linear`, `spherical`, `exponential`).
+- `--buffer-meters`: Optional buffer (meters) around station locations used to bound kriging;
+  rain rate is set to 0 outside the bounding box.
 - `--log-level`: Logging level for console output.
 
 ## Example

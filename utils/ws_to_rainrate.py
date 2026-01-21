@@ -19,6 +19,7 @@ import xarray as xr
 CF_CONVENTIONS = "CF-1.10"
 TIME_UNITS = "hours since 1900-01-01 00:00:0.0"
 LOGGER = logging.getLogger(__name__)
+METERS_PER_DEGREE_LAT = 111_320.0
 
 
 @dataclass
@@ -195,6 +196,31 @@ def _domain_crs_attrs(domain: xr.Dataset) -> dict[str, str]:
     return {str(key): str(value) for key, value in domain["crs"].attrs.items()}
 
 
+def _station_bounding_box(
+    records: Sequence[tuple[str, datetime, float, float, float]],
+    buffer_meters: float,
+) -> tuple[float, float, float, float]:
+    """Compute a lon/lat bounding box around stations with a meter buffer."""
+    if buffer_meters < 0:
+        raise ValueError("Buffer meters must be non-negative.")
+    # Collect station coordinates so we can compute extrema.
+    lons = np.array([item[2] for item in records], dtype=float)
+    lats = np.array([item[3] for item in records], dtype=float)
+    if lons.size == 0 or lats.size == 0:
+        raise ValueError("No station coordinates available for bounding box.")
+    # Convert meter buffer to degrees using mean latitude scaling.
+    mean_lat_radians = math.radians(float(np.mean(lats)))
+    cosine_lat = max(math.cos(mean_lat_radians), 1e-6)
+    buffer_degrees_lat = buffer_meters / METERS_PER_DEGREE_LAT
+    buffer_degrees_lon = buffer_meters / (METERS_PER_DEGREE_LAT * cosine_lat)
+    # Expand the station extent by the buffer in both directions.
+    min_lon = float(np.min(lons) - buffer_degrees_lon)
+    max_lon = float(np.max(lons) + buffer_degrees_lon)
+    min_lat = float(np.min(lats) - buffer_degrees_lat)
+    max_lat = float(np.max(lats) + buffer_degrees_lat)
+    return min_lon, max_lon, min_lat, max_lat
+
+
 def _krige_grid(
     longitudes: np.ndarray,
     latitudes: np.ndarray,
@@ -225,23 +251,57 @@ def _interpolate_interval(
     grid_latitudes: np.ndarray,
     variogram_model: str,
     fill_value: float,
+    bounding_box: tuple[float, float, float, float] | None,
+    outside_value: float,
 ) -> np.ndarray:
     """Interpolate station rain rates for a single time interval."""
+    if bounding_box is not None:
+        # Limit the kriging grid to the buffered station bounding box.
+        min_lon, max_lon, min_lat, max_lat = bounding_box
+        lon_mask = (grid_longitudes >= min_lon) & (grid_longitudes <= max_lon)
+        lat_mask = (grid_latitudes >= min_lat) & (grid_latitudes <= max_lat)
+        if not lon_mask.any() or not lat_mask.any():
+            return np.full((grid_latitudes.size, grid_longitudes.size), outside_value, dtype=float)
+        # Extract the bounded longitude/latitude subgrid for kriging.
+        sub_longitudes = grid_longitudes[lon_mask]
+        sub_latitudes = grid_latitudes[lat_mask]
+    else:
+        lon_mask = None
+        lat_mask = None
+        sub_longitudes = grid_longitudes
+        sub_latitudes = grid_latitudes
     if not aggregates:
-        return np.full((grid_latitudes.size, grid_longitudes.size), fill_value, dtype=float)
-    lons = np.array([agg.longitude for agg in aggregates.values()], dtype=float)
-    lats = np.array([agg.latitude for agg in aggregates.values()], dtype=float)
-    vals = np.array([agg.mean for agg in aggregates.values()], dtype=float)
-    if lons.size < 3:
-        LOGGER.warning("Insufficient stations (%s) for kriging; using mean fill.", lons.size)
-        return np.full(
-            (grid_latitudes.size, grid_longitudes.size),
-            float(np.nanmean(vals)),
-            dtype=float,
-        )
-    grid = _krige_grid(lons, lats, vals, grid_longitudes, grid_latitudes, variogram_model)
-    grid = np.where(np.isfinite(grid), grid, fill_value)
-    return grid.astype(np.float32)
+        # No stations in this interval: fill the kriging area with the fill value.
+        interval_grid = np.full((sub_latitudes.size, sub_longitudes.size), fill_value, dtype=float)
+    else:
+        lons = np.array([agg.longitude for agg in aggregates.values()], dtype=float)
+        lats = np.array([agg.latitude for agg in aggregates.values()], dtype=float)
+        vals = np.array([agg.mean for agg in aggregates.values()], dtype=float)
+        if lons.size < 3:
+            LOGGER.warning("Insufficient stations (%s) for kriging; using mean fill.", lons.size)
+            # Use the mean station value over the kriging area when kriging is unsupported.
+            interval_grid = np.full(
+                (sub_latitudes.size, sub_longitudes.size),
+                float(np.nanmean(vals)),
+                dtype=float,
+            )
+        else:
+            # Run kriging on the reduced grid and replace NaNs with the fill value.
+            interval_grid = _krige_grid(
+                lons,
+                lats,
+                vals,
+                sub_longitudes,
+                sub_latitudes,
+                variogram_model,
+            )
+            interval_grid = np.where(np.isfinite(interval_grid), interval_grid, fill_value)
+    if bounding_box is None:
+        return interval_grid.astype(np.float32)
+    # Insert the kriged subgrid into the full domain with outside values set to zero.
+    full_grid = np.full((grid_latitudes.size, grid_longitudes.size), outside_value, dtype=float)
+    full_grid[np.ix_(lat_mask, lon_mask)] = interval_grid
+    return full_grid.astype(np.float32)
 
 
 def _build_rain_dataset(
@@ -376,6 +436,12 @@ def main() -> None:
         help="PyKrige variogram model (e.g., linear, spherical, exponential).",
     )
     parser.add_argument(
+        "--buffer-meters",
+        type=float,
+        default=None,
+        help="Apply a station-based bounding box buffered by this many meters.",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         help="Logging level (default: INFO).",
@@ -393,6 +459,19 @@ def main() -> None:
 
     LOGGER.info("Grouping records into %s-second intervals", args.interval)
     start_seconds, bins = _build_time_bins(records, args.interval)
+
+    bounding_box = None
+    if args.buffer_meters is not None:
+        # Build a bounding box around all station locations with a meter buffer.
+        bounding_box = _station_bounding_box(records, args.buffer_meters)
+        LOGGER.info(
+            "Applying station buffer %.2f m -> bbox lon[%.4f, %.4f], lat[%.4f, %.4f]",
+            args.buffer_meters,
+            bounding_box[0],
+            bounding_box[1],
+            bounding_box[2],
+            bounding_box[3],
+        )
 
     LOGGER.info("Loading domain grid from %s", args.domain)
     domain = _load_domain(args.domain)
@@ -416,6 +495,8 @@ def main() -> None:
             latitudes,
             args.variogram_model,
             args.fill_value,
+            bounding_box,
+            outside_value=0.0,
         )
         rain_fields.append(field)
 

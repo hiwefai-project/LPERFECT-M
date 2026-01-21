@@ -6,7 +6,7 @@ LPERFECT consumes rainfall forcing files that follow the CF-1.10 schema in `cdl/
 
 - **Weather radar GeoTIFFs → rain rate NetCDF:** [`docs/wr_to_rain.md`](docs/wr_to_rain.md)
 - **WRF accumulations → rain rate NetCDF:** [`docs/meteouniparthenope-wrf_to_rainrate.md`](docs/meteouniparthenope-wrf_to_rainrate.md)
-- **Weather station CSVs → rain rate NetCDF:** [`utils/ws_to_rainrate.md`](utils/ws_to_rainrate.md)
+- **Weather station CSVs → rain rate NetCDF:** [`utils/ws_to_rainrate.md`](docs/ws_to_rainrate.md)
 
 ## Data preparation overview
 

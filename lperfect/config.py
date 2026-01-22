@@ -59,6 +59,7 @@ def default_config() -> Dict[str, Any]:  # define function default_config
                 "min_s": 0.25,  # execute statement
                 "max_s": 3600.0,  # execute statement
             },  # execute statement
+            "runoff_only_risk": False,  # execute statement
             "outflow_sink": True,  # execute statement
             "log_every": 10,  # execute statement
         },  # execute statement

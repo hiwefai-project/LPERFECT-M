@@ -82,6 +82,11 @@ def parse_args() -> argparse.Namespace:  # define function parse_args
         help="Maximum hop travel time (s) when using --travel-time-mode auto.",
     )  # execute statement
     ap.add_argument(
+        "--runoff-only-risk",
+        action="store_true",
+        help="Disable Lagrangian transport and compute risk index from runoff only.",
+    )  # execute statement
+    ap.add_argument(
         "--parallel-metrics",
         action="store_true",
         help="Enable parallelization evaluation metrics (overrides metrics.parallelization.enabled).",

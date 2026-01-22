@@ -46,6 +46,7 @@
       "min_s": 0.25,
       "max_s": 3600.0
     },
+    "runoff_only_risk": false,
     "outflow_sink": true,
     "log_every": 10
   },

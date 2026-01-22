@@ -279,6 +279,70 @@ and gracefully falls back to CPU if CuPy is missing.
 | `compute.shared_memory.workers` | `null` | Worker threads (defaults to CPU cores when `null`). | `"workers": 8` |
 | `compute.shared_memory.min_particles_per_worker` | `5000` | Minimum local particles before parallelizing (prevents overhead on small runs). | `20000` |
 | `compute.shared_memory.chunk_size` | `65536` | Particle chunk size per task (tune for memory/cache). | `131072` |
+| `compute.mpi.enabled` | `null` | Enable/disable MPI explicitly (`true`, `false`, or `null` for auto-detect when launched under MPI). | `"enabled": true` |
+| `compute.mpi.decomposition` | `auto` | MPI row-slab decomposition strategy (`auto` or `balanced`). | `"decomposition": "balanced"` |
+| `compute.mpi.min_rows_per_rank` | `1` | Minimum grid rows per rank (prevents tiny slabs). | `"min_rows_per_rank": 8` |
+| `compute.mpi.balance.every_steps` | `0` | Force MPI rebalancing every N steps (0 disables). | `"every_steps": 250` |
+| `compute.mpi.balance.every_sim_s` | `0` | Force MPI rebalancing every N simulated seconds (0 disables). | `"every_sim_s": 1800` |
+| `compute.mpi.balance.auto` | `false` | Enable automatic load-balance when particle counts drift. | `"auto": true` |
+| `compute.mpi.balance.imbalance_threshold` | `2.0` | Trigger auto-balance when max/min particle ratio exceeds this value. | `"imbalance_threshold": 1.5` |
+
+### MPI + shared-memory (hybrid) configuration
+
+To run LPERFECT-M with **MPI across ranks** and **shared-memory threads inside each rank**,
+configure both the `compute.mpi` and `compute.shared_memory` blocks. MPI distributes the
+domain by row slabs, while shared-memory workers parallelize particle operations within
+each rank. This hybrid mode is ideal for multi-core nodes where you want fewer MPI ranks
+and more per-rank threads.
+
+**Checklist**
+
+1. Install `mpi4py` and ensure an MPI runtime (OpenMPI/MPICH) is available.
+2. Launch with `mpirun` or `mpiexec` using the desired number of ranks.
+3. Set `compute.shared_memory.enabled = true` and pick a reasonable `workers` count **per rank**.
+4. Optional: tune `compute.mpi.decomposition` and `compute.mpi.balance` for load balance.
+
+**Hybrid MPI + threads example (CPU-only):**
+
+```json
+{
+  "compute": {
+    "device": "cpu",
+    "mpi": {
+      "enabled": true,
+      "decomposition": "balanced",
+      "min_rows_per_rank": 8,
+      "balance": {
+        "every_steps": 0,
+        "every_sim_s": 0,
+        "auto": true,
+        "imbalance_threshold": 1.5
+      }
+    },
+    "shared_memory": {
+      "enabled": true,
+      "workers": 6,
+      "min_particles_per_worker": 20000,
+      "chunk_size": 131072
+    }
+  }
+}
+```
+
+**Launch command (4 ranks × 6 threads each):**
+
+```bash
+mpirun -np 4 python main.py --config config.json
+```
+
+**Notes**
+
+- `compute.mpi.enabled = null` (default) auto-enables MPI only when launched under an MPI
+  launcher with more than one rank; set it to `false` to force serial behavior even when
+  running under `mpirun`.
+- `compute.shared_memory.workers` is **per rank**; ensure `ranks × workers` fits the
+  physical cores on each node to avoid oversubscription.
+- For small runs, keep `min_particles_per_worker` higher to avoid thread overhead.
 
 **Example:**
 

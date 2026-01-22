@@ -67,7 +67,7 @@ done
 ```
 
 ## 6. Convert WRF accumulations to rain rate on the domain grid
-Use `utils/meteouniparthenope-wrf_to_rainrate.py` to merge and regrid the WRF files into two rainfall NetCDFs. The script reads hourly accumulated rain (`DELTA_RAIN`), converts it to rain rate (kg m-2 s-1), sorts/deduplicates time, and reprojects to `data/domain.nc`.
+Use `utils/meteouniparthenope-wrf_to_rainrate.py` to merge and regrid the WRF files into two rainfall NetCDFs. The script reads hourly accumulated rain (`DELTA_RAIN`), converts it to rain rate (mm h-1), sorts/deduplicates time, and reprojects to `data/domain.nc`.
 ```bash
 # 5 km Italy (d02)
 python utils/meteouniparthenope-wrf_to_rainrate.py \

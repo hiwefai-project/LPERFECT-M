@@ -84,6 +84,7 @@ python main.py --config config.json --restart-in restart_state.nc
 python main.py --config config.json --restart-out restart_state.nc
 python main.py --config config.json --travel-time-mode auto
 python main.py --config config.json --outflow-geojson out/outflow_hits.geojson
+python main.py --config config.json --runoff-only-risk
 ```
 
 ### Parallelization switches (mix-and-match)
@@ -155,6 +156,7 @@ LPERFECT uses cumulative SCS-CN:
 ### Lagrangian routing
 Incremental runoff is converted into **particles** (small fixed water volumes).  
 Particles hop along D8 with travel-time gating; travel times can be fixed scalars or automatically derived from cell area plus representative hillslope/channel velocities (with configurable bounds).
+Set `model.runoff_only_risk=true` or pass `--runoff-only-risk` to skip particle routing and compute the risk index directly from cumulative runoff.
 
 ### Parallelization
 MPI mode uses:

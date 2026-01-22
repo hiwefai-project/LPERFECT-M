@@ -33,6 +33,7 @@ Run `python main.py --help` to see the available flags. The CLI currently offers
 | `--travel-time-min` | `None` | Minimum hop time (s) when `--travel-time-mode auto`. | `python main.py --travel-time-mode auto --travel-time-min 0.5` |
 | `--travel-time-max` | `None` | Maximum hop time (s) when `--travel-time-mode auto`. | `python main.py --travel-time-mode auto --travel-time-max 900` |
 | `--outflow-geojson` | `None` | GeoJSON path for logging sea/lake outflow hit points. Overrides `output.outflow_geojson`. | `python main.py --outflow-geojson outputs/outflow.geojson` |
+| `--runoff-only-risk` | `False` | Disable Lagrangian transport and compute the risk index from runoff only. Overrides `model.runoff_only_risk`. | `python main.py --runoff-only-risk` |
 | `--parallel-metrics` | `False` | Enable parallelization metrics collection. Overrides `metrics.parallelization.enabled`. | `python main.py --parallel-metrics` |
 | `--parallel-metrics-output` | `None` | Path to write GPT-friendly metrics JSON. Overrides `metrics.parallelization.output`. | `python main.py --parallel-metrics --parallel-metrics-output runs/metrics.json` |
 | `--ai-metrics` | `False` | Enable GPT-ready hydrology + compute metrics. Overrides `metrics.assistant.enabled`. | `python main.py --ai-metrics` |
@@ -76,6 +77,7 @@ The JSON file mirrors the default configuration structure. A complete example
       "min_s": 0.25,
       "max_s": 3600.0
     },
+    "runoff_only_risk": false,
     "outflow_sink": true,
     "log_every": 10
   },
@@ -315,6 +317,7 @@ Controls the core simulation parameters.
 | `model.travel_time_auto.channel_velocity_ms` | `1.5` | Mean channel velocity (m/s) used when `travel_time_mode = "auto"`. | `2.5` |
 | `model.travel_time_auto.min_s` | `0.25` | Lower clamp for automatically derived travel times (seconds). | `0.5` |
 | `model.travel_time_auto.max_s` | `3600.0` | Upper clamp for automatically derived travel times (seconds). | `900.0` |
+| `model.runoff_only_risk` | `false` | Skip particle transport and compute the risk index directly from cumulative runoff. | `"runoff_only_risk": true` |
 | `model.outflow_sink` | `true` | Drop particles that flow out of the domain. | `"outflow_sink": false` |
 | `model.log_every` | `10` | Log diagnostic output every N steps (`0` to disable). | `"log_every": 20` |
 

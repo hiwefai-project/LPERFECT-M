@@ -99,6 +99,26 @@ def _expand_inputs(inputs: List[str]) -> List[str]:
     return out
 
 
+def _default_output_name() -> str:
+    """Return the default filename used when --out points to a directory."""
+    return "rain_rate_merged.nc"
+
+
+def _resolve_output_path(out_path: str) -> Path:
+    """Resolve the output path, handling directory targets gracefully."""
+    target = Path(out_path)
+    # Treat existing directories as output folders.
+    if target.exists() and target.is_dir():
+        return target / _default_output_name()
+    # Treat paths with no suffix or a trailing separator as directories.
+    if str(out_path).endswith(("/", "\\")) or target.suffix == "":
+        target.mkdir(parents=True, exist_ok=True)
+        return target / _default_output_name()
+    # Ensure the parent directory exists for file targets.
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return target
+
+
 def _require_rioxarray() -> None:
     """Ensure rioxarray is available for reprojection/regridding."""
     try:
@@ -231,6 +251,7 @@ def convert_many(
     paths = _expand_inputs(in_paths)
     if not paths:
         raise ValueError("No input files found. Check --in arguments/globs.")
+    resolved_out_path = _resolve_output_path(out_path)
 
     domain = _load_domain_reference(domain_path)
     LOG.info("Loaded reference domain from %s", domain_path)
@@ -339,8 +360,10 @@ def convert_many(
         "longitude": {"dtype": "float32"},
     }
 
-    LOG.info("Writing output: %s", out_path)
-    merged.to_netcdf(out_path, encoding=encoding)
+    if Path(out_path).resolve() != resolved_out_path.resolve():
+        LOG.info("Resolved output path from %s to %s", out_path, resolved_out_path)
+    LOG.info("Writing output: %s", resolved_out_path)
+    merged.to_netcdf(resolved_out_path, encoding=encoding)
     LOG.info("Done. Time steps written: %d", int(merged.dims.get("time", 0)))
 
 

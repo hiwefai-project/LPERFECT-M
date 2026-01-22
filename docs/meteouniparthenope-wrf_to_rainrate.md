@@ -88,6 +88,17 @@ python convert_wrf_rain_to_rain_time_dependent.py \
   --domain domain.nc
 ```
 
+### Output to a directory
+If `--out` points to a directory (existing or not), the script writes
+`rain_rate_merged.nc` inside it.
+
+```bash
+python convert_wrf_rain_to_rain_time_dependent.py \
+  --in wrf5_d02_20251221Z*.nc \
+  --out data/ \
+  --domain domain.nc
+```
+
 ### Non-hourly accumulations
 ```bash
 python convert_wrf_rain_to_rain_time_dependent.py \
@@ -104,7 +115,7 @@ python convert_wrf_rain_to_rain_time_dependent.py \
 | Option | Description |
 |------|-------------|
 | `--in PATH [PATH ...]` | One or more input NetCDFs. Can be globs. |
-| `--out PATH` | Output merged NetCDF |
+| `--out PATH` | Output merged NetCDF (file path or directory) |
 | `--rain-var NAME` | Rain accumulation variable name (**only `DELTA_RAIN` is supported**) |
 | `--accum-hours H` | Accumulation window in hours (default 1.0) |
 | `--domain PATH` | Domain NetCDF defining the target grid (compliant with `cdl/domain.cdl`) |

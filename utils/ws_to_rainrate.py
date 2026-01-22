@@ -10,7 +10,7 @@ import importlib.util
 import logging
 import math
 from pathlib import Path
-from typing import Iterable, Iterator, Sequence
+from typing import Iterable, Iterator, Sequence, Optional
 
 import numpy as np
 import xarray as xr
@@ -58,6 +58,98 @@ def _require_pykrige() -> None:
             "PyKrige is required for kriging interpolation. "
             "Install it with 'pip install pykrige'."
         )
+
+
+
+def _require_pyproj_shapely() -> None:
+    """Ensure pyproj and shapely are available for metric buffering/masking."""
+    if importlib.util.find_spec("pyproj") is None:
+        raise ImportError(
+            "pyproj is required for metric buffering/masking. "
+            "Install it with 'pip install pyproj'."
+        )
+    if importlib.util.find_spec("shapely") is None:
+        raise ImportError(
+            "shapely is required for metric buffering/masking. "
+            "Install it with 'pip install shapely'."
+        )
+
+
+def _auto_utm_epsg(longitudes: np.ndarray, latitudes: np.ndarray) -> int:
+    """Pick a suitable UTM EPSG code based on the mean station location."""
+    mean_lon = float(np.mean(longitudes))
+    mean_lat = float(np.mean(latitudes))
+    zone = int(math.floor((mean_lon + 180.0) / 6.0) + 1)
+    zone = min(max(zone, 1), 60)
+    if mean_lat >= 0.0:
+        return 32600 + zone  # WGS84 / UTM Northern Hemisphere
+    return 32700 + zone  # WGS84 / UTM Southern Hemisphere
+
+
+def _project_lonlat_to_xy(
+    lons: np.ndarray,
+    lats: np.ndarray,
+    epsg: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Project lon/lat arrays to metric x/y arrays using the provided EPSG."""
+    _require_pyproj_shapely()
+    from pyproj import Transformer
+
+    transformer = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
+    x, y = transformer.transform(lons, lats)
+    return np.asarray(x, dtype=float), np.asarray(y, dtype=float)
+
+
+def _build_hull_buffer_mask(
+    station_lons: np.ndarray,
+    station_lats: np.ndarray,
+    grid_lons: np.ndarray,
+    grid_lats: np.ndarray,
+    buffer_meters: float,
+    epsg: Optional[int] = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    """Return (mask2d, x2d, y2d, used_epsg) for the convex-hull+buffer domain."""
+    if buffer_meters < 0:
+        raise ValueError("Buffer meters must be non-negative.")
+    _require_pyproj_shapely()
+    from shapely.geometry import MultiPoint, Point
+    from shapely.prepared import prep
+
+    if epsg is None:
+        epsg = _auto_utm_epsg(station_lons, station_lats)
+
+    # Project stations and grid to metric coordinates.
+    station_x, station_y = _project_lonlat_to_xy(station_lons, station_lats, epsg)
+    lon_mesh, lat_mesh = np.meshgrid(grid_lons, grid_lats)
+    grid_x, grid_y = _project_lonlat_to_xy(lon_mesh.ravel(), lat_mesh.ravel(), epsg)
+    grid_x2d = grid_x.reshape(lon_mesh.shape)
+    grid_y2d = grid_y.reshape(lon_mesh.shape)
+
+    # Build convex hull and apply metric buffer.
+    hull = MultiPoint(np.column_stack([station_x, station_y])).convex_hull
+    buffered = hull.buffer(buffer_meters)
+
+    prepared = prep(buffered)
+
+    # Build mask. Prefer vectorized predicates when available.
+    try:
+        # Shapely 2.x
+        from shapely import contains_xy  # type: ignore
+
+        mask_flat = contains_xy(buffered, grid_x, grid_y)
+        mask2d = np.asarray(mask_flat, dtype=bool).reshape(lon_mesh.shape)
+    except Exception:
+        # Generic (works on Shapely 1.8+): loop over points.
+        mask2d = np.zeros(lon_mesh.shape, dtype=bool)
+        it = np.nditer(mask2d, flags=["multi_index"], op_flags=["readwrite"])
+        for cell in it:
+            j, i = it.multi_index
+            cell[...] = prepared.contains(
+                Point(float(grid_x2d[j, i]), float(grid_y2d[j, i]))
+            )
+
+    return mask2d, grid_x2d, grid_y2d, int(epsg)
+
 
 
 def _parse_time(value: str) -> datetime:
@@ -196,186 +288,155 @@ def _domain_crs_attrs(domain: xr.Dataset) -> dict[str, str]:
     return {str(key): str(value) for key, value in domain["crs"].attrs.items()}
 
 
-def _station_bounding_box(
-    records: Sequence[tuple[str, datetime, float, float, float]],
-    buffer_meters: float,
-) -> tuple[float, float, float, float]:
-    """Compute a lon/lat bounding box around stations with a meter buffer."""
-    if buffer_meters < 0:
-        raise ValueError("Buffer meters must be non-negative.")
-    # Collect station coordinates so we can compute extrema.
-    lons = np.array([item[2] for item in records], dtype=float)
-    lats = np.array([item[3] for item in records], dtype=float)
-    if lons.size == 0 or lats.size == 0:
-        raise ValueError("No station coordinates available for bounding box.")
-    # Convert meter buffer to degrees using mean latitude scaling.
-    mean_lat_radians = math.radians(float(np.mean(lats)))
-    cosine_lat = max(math.cos(mean_lat_radians), 1e-6)
-    buffer_degrees_lat = buffer_meters / METERS_PER_DEGREE_LAT
-    buffer_degrees_lon = buffer_meters / (METERS_PER_DEGREE_LAT * cosine_lat)
-    # Expand the station extent by the buffer in both directions.
-    min_lon = float(np.min(lons) - buffer_degrees_lon)
-    max_lon = float(np.max(lons) + buffer_degrees_lon)
-    min_lat = float(np.min(lats) - buffer_degrees_lat)
-    max_lat = float(np.max(lats) + buffer_degrees_lat)
-    return min_lon, max_lon, min_lat, max_lat
-
-
-def _krige_grid(
-    longitudes: np.ndarray,
-    latitudes: np.ndarray,
-    values: np.ndarray,
-    grid_longitudes: np.ndarray,
-    grid_latitudes: np.ndarray,
+def _krige_points(
+    station_x: np.ndarray,
+    station_y: np.ndarray,
+    station_values: np.ndarray,
+    points_x: np.ndarray,
+    points_y: np.ndarray,
     variogram_model: str,
 ) -> np.ndarray:
-    """Perform ordinary kriging over the domain grid."""
+    """Perform ordinary kriging for arbitrary points in metric coordinates."""
     _require_pykrige()
     from pykrige.ok import OrdinaryKriging
 
-    kriging = OrdinaryKriging(
-        longitudes,
-        latitudes,
-        values,
+    ok = OrdinaryKriging(
+        station_x,
+        station_y,
+        station_values,
         variogram_model=variogram_model,
         verbose=False,
         enable_plotting=False,
     )
-    grid, _ = kriging.execute("grid", grid_longitudes, grid_latitudes)
-    return np.asarray(grid, dtype=float)
+    z, _ = ok.execute("points", points_x, points_y)
+    return np.asarray(z, dtype=float)
 
 
-def _idw_grid(
-    longitudes: np.ndarray,
-    latitudes: np.ndarray,
-    values: np.ndarray,
-    grid_longitudes: np.ndarray,
-    grid_latitudes: np.ndarray,
+def _idw_points(
+    station_x: np.ndarray,
+    station_y: np.ndarray,
+    station_values: np.ndarray,
+    points_x: np.ndarray,
+    points_y: np.ndarray,
     power: float = 2.0,
     min_distance_meters: float = 1.0,
 ) -> np.ndarray:
-    """Perform inverse-distance weighting over the domain grid."""
-    # Prepare a latitude/longitude mesh for vectorized distance math.
-    lon_mesh = grid_longitudes[np.newaxis, :]
-    lat_mesh = grid_latitudes[:, np.newaxis]
-    # Allocate arrays for weighted sums and total weights.
-    weighted_sum = np.zeros((grid_latitudes.size, grid_longitudes.size), dtype=float)
-    weight_total = np.zeros_like(weighted_sum)
-    # Walk each station so we can accumulate IDW contributions.
-    for lon, lat, value in zip(longitudes, latitudes, values):
-        # Convert longitudinal degrees into meters for this station's latitude.
-        meters_per_degree_lon = METERS_PER_DEGREE_LAT * max(math.cos(math.radians(lat)), 1e-6)
-        # Convert degree offsets into meter offsets along each axis.
-        dx = (lon_mesh - lon) * meters_per_degree_lon
-        dy = (lat_mesh - lat) * METERS_PER_DEGREE_LAT
-        # Compute straight-line distances in meters.
-        distances = np.hypot(dx, dy)
-        # Identify grid points that coincide with the station location.
-        exact_mask = distances == 0.0
-        # Force exact matches to the station value.
-        if exact_mask.any():
-            weighted_sum[exact_mask] = value
-            weight_total[exact_mask] = np.inf
-        # Apply a minimum distance to avoid divide-by-zero in weights.
-        safe_distances = np.maximum(distances, min_distance_meters)
-        # Compute inverse-distance weights for the station.
-        weights = 1.0 / np.power(safe_distances, power)
-        # Skip updates where an exact match was already set.
-        weights = np.where(weight_total == np.inf, 0.0, weights)
-        # Accumulate weighted values and weights.
-        weighted_sum += weights * value
-        weight_total += weights
-    # Compute the weighted average for non-exact cells.
-    interpolated = np.divide(
-        weighted_sum,
-        weight_total,
-        out=np.zeros_like(weighted_sum),
-        where=(weight_total > 0) & (weight_total != np.inf),
-    )
-    # Restore exact station values where we locked them in.
-    interpolated = np.where(weight_total == np.inf, weighted_sum, interpolated)
-    return interpolated
+    """Inverse-distance weighting for arbitrary points in metric coordinates."""
+    station_x = np.asarray(station_x, dtype=float)
+    station_y = np.asarray(station_y, dtype=float)
+    station_values = np.asarray(station_values, dtype=float)
+
+    px = np.asarray(points_x, dtype=float)
+    py = np.asarray(points_y, dtype=float)
+
+    # Compute distances to each station (n_points, n_stations).
+    dx = px[:, None] - station_x[None, :]
+    dy = py[:, None] - station_y[None, :]
+    dist = np.hypot(dx, dy)
+
+    # Handle exact matches.
+    exact = dist == 0.0
+    out = np.empty(px.shape[0], dtype=float)
+    if exact.any():
+        # For each point, if it matches any station, take the first match value.
+        first_match = exact.argmax(axis=1)
+        has_match = exact.any(axis=1)
+        out[has_match] = station_values[first_match[has_match]]
+        # For non-matching points proceed with IDW.
+        use = ~has_match
+    else:
+        use = np.ones(px.shape[0], dtype=bool)
+
+    if use.any():
+        safe = np.maximum(dist[use], min_distance_meters)
+        w = 1.0 / np.power(safe, power)
+        wsum = np.sum(w, axis=1)
+        out[use] = np.sum(w * station_values[None, :], axis=1) / wsum
+
+    return out
 
 
 def _interpolate_interval(
     aggregates: dict[str, StationAggregate],
     grid_longitudes: np.ndarray,
     grid_latitudes: np.ndarray,
+    grid_x2d: np.ndarray,
+    grid_y2d: np.ndarray,
+    domain_mask2d: Optional[np.ndarray],
+    epsg: int,
     variogram_model: str,
     fill_value: float,
-    bounding_box: tuple[float, float, float, float] | None,
     outside_value: float,
 ) -> np.ndarray:
-    """Interpolate station rain rates for a single time interval."""
-    if bounding_box is not None:
-        # Limit the kriging grid to the buffered station bounding box.
-        min_lon, max_lon, min_lat, max_lat = bounding_box
-        lon_mask = (grid_longitudes >= min_lon) & (grid_longitudes <= max_lon)
-        lat_mask = (grid_latitudes >= min_lat) & (grid_latitudes <= max_lat)
-        if not lon_mask.any() or not lat_mask.any():
-            return np.full((grid_latitudes.size, grid_longitudes.size), outside_value, dtype=float)
-        # Extract the bounded longitude/latitude subgrid for kriging.
-        sub_longitudes = grid_longitudes[lon_mask]
-        sub_latitudes = grid_latitudes[lat_mask]
+    """Interpolate station rain rates for a single time interval.
+
+    Implements:
+      - Convex-hull + metric buffer masking (if domain_mask2d provided)
+      - Ordinary kriging on log1p(rain_rate) with back-transform
+      - Fallbacks: 2 stations -> IDW, 1 station -> constant, 0 -> fill_value
+    """
+    out = np.full((grid_latitudes.size, grid_longitudes.size), outside_value, dtype=float)
+
+    if domain_mask2d is None:
+        mask = np.ones_like(out, dtype=bool)
     else:
-        lon_mask = None
-        lat_mask = None
-        sub_longitudes = grid_longitudes
-        sub_latitudes = grid_latitudes
+        if domain_mask2d.shape != out.shape:
+            raise ValueError("Domain mask shape does not match the domain grid.")
+        mask = domain_mask2d
+
+    if not mask.any():
+        return out.astype(np.float32)
+
     if not aggregates:
-        # No stations in this interval: fill the kriging area with the fill value.
-        interval_grid = np.full((sub_latitudes.size, sub_longitudes.size), fill_value, dtype=float)
-    else:
-        lons = np.array([agg.longitude for agg in aggregates.values()], dtype=float)
-        lats = np.array([agg.latitude for agg in aggregates.values()], dtype=float)
-        vals = np.array([agg.mean for agg in aggregates.values()], dtype=float)
-        # Filter out non-finite station values before interpolation.
-        valid_mask = np.isfinite(vals)
-        lons = lons[valid_mask]
-        lats = lats[valid_mask]
-        vals = vals[valid_mask]
-        if lons.size == 0:
-            # Fall back to the fill value when all station values are invalid.
-            interval_grid = np.full(
-                (sub_latitudes.size, sub_longitudes.size),
-                fill_value,
-                dtype=float,
-            )
-        elif lons.size == 1:
-            LOGGER.warning("Only one station for interpolation; using station value fill.")
-            # Fill the kriging area with the single station value.
-            interval_grid = np.full(
-                (sub_latitudes.size, sub_longitudes.size),
-                float(vals[0]),
-                dtype=float,
-            )
-        elif lons.size == 2:
-            LOGGER.warning("Only two stations for interpolation; using IDW fallback.")
-            # Use inverse-distance weighting to provide a spatial gradient.
-            interval_grid = _idw_grid(
-                lons,
-                lats,
-                vals,
-                sub_longitudes,
-                sub_latitudes,
-            )
-        else:
-            # Run kriging on the reduced grid and replace NaNs with the fill value.
-            interval_grid = _krige_grid(
-                lons,
-                lats,
-                vals,
-                sub_longitudes,
-                sub_latitudes,
-                variogram_model,
-            )
-            interval_grid = np.where(np.isfinite(interval_grid), interval_grid, fill_value)
-    if bounding_box is None:
-        return interval_grid.astype(np.float32)
-    # Insert the kriged subgrid into the full domain with outside values set to zero.
-    full_grid = np.full((grid_latitudes.size, grid_longitudes.size), outside_value, dtype=float)
-    full_grid[np.ix_(lat_mask, lon_mask)] = interval_grid
-    return full_grid.astype(np.float32)
+        out[mask] = fill_value
+        return out.astype(np.float32)
+
+    lons = np.array([agg.longitude for agg in aggregates.values()], dtype=float)
+    lats = np.array([agg.latitude for agg in aggregates.values()], dtype=float)
+    vals = np.array([agg.mean for agg in aggregates.values()], dtype=float)
+
+    valid = np.isfinite(vals)
+    lons = lons[valid]
+    lats = lats[valid]
+    vals = vals[valid]
+
+    if lons.size == 0:
+        out[mask] = fill_value
+        return out.astype(np.float32)
+
+    # Project station coordinates into the same metric CRS used for the grid.
+    # We infer the CRS by reusing the grid_x2d/grid_y2d generation path:
+    # it guarantees station/grid were projected with the same EPSG in main().
+    # Here we approximate by projecting using local meters-per-degree only if needed.
+    # NOTE: main() passes projected station coords by re-projecting lon/lat to the same EPSG.
+    # To avoid duplicating logic, we project again using a local automatic UTM.
+    station_x, station_y = _project_lonlat_to_xy(lons, lats, epsg)
+
+    # Points to interpolate (only inside mask).
+    px = grid_x2d[mask].ravel()
+    py = grid_y2d[mask].ravel()
+
+    if lons.size == 1:
+        out[mask] = float(vals[0])
+        return out.astype(np.float32)
+
+    if lons.size == 2:
+        LOGGER.warning("Only two stations for interpolation; using IDW fallback.")
+        out_vals = _idw_points(station_x, station_y, vals, px, py)
+        out[mask] = np.where(np.isfinite(out_vals), out_vals, fill_value)
+        return out.astype(np.float32)
+
+    # Kriging on transformed values.
+    vals_pos = np.clip(vals, 0.0, None)
+    z = np.log1p(vals_pos)
+
+    z_hat = _krige_points(station_x, station_y, z, px, py, variogram_model)
+    r_hat = np.expm1(z_hat)
+    r_hat = np.where(np.isfinite(r_hat), r_hat, fill_value)
+    r_hat = np.clip(r_hat, 0.0, None)
+
+    out[mask] = r_hat
+    return out.astype(np.float32)
 
 
 def _build_rain_dataset(
@@ -513,7 +574,7 @@ def main() -> None:
         "--buffer-meters",
         type=float,
         default=None,
-        help="Apply a station-based bounding box buffered by this many meters.",
+        help="Limit interpolation to the station convex hull buffered by this many meters (metric buffer).",
     )
     parser.add_argument(
         "--log-level",
@@ -534,23 +595,39 @@ def main() -> None:
     LOGGER.info("Grouping records into %s-second intervals", args.interval)
     start_seconds, bins = _build_time_bins(records, args.interval)
 
-    bounding_box = None
-    if args.buffer_meters is not None:
-        # Build a bounding box around all station locations with a meter buffer.
-        bounding_box = _station_bounding_box(records, args.buffer_meters)
-        LOGGER.info(
-            "Applying station buffer %.2f m -> bbox lon[%.4f, %.4f], lat[%.4f, %.4f]",
-            args.buffer_meters,
-            bounding_box[0],
-            bounding_box[1],
-            bounding_box[2],
-            bounding_box[3],
-        )
-
     LOGGER.info("Loading domain grid from %s", args.domain)
     domain = _load_domain(args.domain)
     latitudes, longitudes = _domain_coords(domain)
     crs_attrs = _domain_crs_attrs(domain)
+    # Pre-compute station hull+buffer mask (and metric grid coordinates) in a UTM CRS.
+    station_lonlat: dict[str, tuple[float, float]] = {}
+    for station_id, _, lon, lat, _ in records:
+        station_lonlat.setdefault(station_id, (lon, lat))
+    station_lons = np.array([item[0] for item in station_lonlat.values()], dtype=float)
+    station_lats = np.array([item[1] for item in station_lonlat.values()], dtype=float)
+    if station_lons.size == 0:
+        raise ValueError("No station coordinates found in input records.")
+
+    epsg_used = _auto_utm_epsg(station_lons, station_lats)
+
+    if args.buffer_meters is not None:
+        LOGGER.info("Building convex-hull+buffer mask (buffer=%.2f m, EPSG:%d)", args.buffer_meters, epsg_used)
+        domain_mask2d, grid_x2d, grid_y2d, epsg_used = _build_hull_buffer_mask(
+            station_lons=station_lons,
+            station_lats=station_lats,
+            grid_lons=longitudes,
+            grid_lats=latitudes,
+            buffer_meters=args.buffer_meters,
+            epsg=epsg_used,
+        )
+    else:
+        LOGGER.info("No buffer provided; interpolating on the full domain (EPSG:%d for metric calculations).", epsg_used)
+        lon_mesh, lat_mesh = np.meshgrid(longitudes, latitudes)
+        grid_x, grid_y = _project_lonlat_to_xy(lon_mesh.ravel(), lat_mesh.ravel(), epsg_used)
+        grid_x2d = grid_x.reshape(lon_mesh.shape)
+        grid_y2d = grid_y.reshape(lon_mesh.shape)
+        domain_mask2d = None
+
     if args.grid_mapping_name is not None:
         crs_attrs["grid_mapping_name"] = args.grid_mapping_name
     if args.epsg is not None:
@@ -567,9 +644,12 @@ def main() -> None:
             bins[index],
             longitudes,
             latitudes,
+            grid_x2d,
+            grid_y2d,
+            domain_mask2d,
+            epsg_used,
             args.variogram_model,
             args.fill_value,
-            bounding_box,
             outside_value=0.0,
         )
         rain_fields.append(field)

@@ -13,6 +13,7 @@ LPERFECT-M offers two MPI schemas:
 2. **Particles**: domain fields are replicated; particles are evenly distributed across ranks (and rebalanced automatically).
 
 If MPI is available but explicitly disabled, only rank 0 runs while other launched ranks exit immediately.
+If an MPI launcher is detected but `mpi4py` is missing, LPERFECT-M keeps only rank 0 alive to avoid duplicate serial runs; setting `compute.mpi.enabled=true` in that situation aborts early with a clear error so you can install `mpi4py` or disable MPI explicitly.
 When `model.runoff_only_risk=true` (or `--runoff-only-risk`), particle transport is skipped and particle-specific schema behavior is effectively inactive.
 
 ### 1.1 Domain Ownership (Slab schema)

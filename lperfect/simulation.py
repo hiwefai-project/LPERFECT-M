@@ -31,7 +31,12 @@ from .compute_backend import gpu_available, normalize_device  # import .compute_
 from .hydraulics import spawn_particles_from_runoff_slab, advect_particles_one_step, local_volgrid_from_particles_slab  # import .hydraulics import spawn_particles_from_runoff_slab, advect_particles_one_step, local_volgrid_from_particles_slab
 from .particles import Particles, empty_particles, concat_particles  # import .particles import Particles, empty_particles, concat_particles
 from .risk import compute_flow_accum_area_m2, compute_risk_index  # import .risk import compute_flow_accum_area_m2, compute_risk_index
-from .io_netcdf import write_results_netcdf_rank0, save_restart_netcdf_rank0, load_restart_netcdf_rank0  # import .io_netcdf import write_results_netcdf_rank0, save_restart_netcdf_rank0, load_restart_netcdf_rank0
+from .io_netcdf import (  # import .io_netcdf
+    load_restart_netcdf_rank0,
+    normalize_output_variables,
+    save_restart_netcdf_rank0,
+    write_results_netcdf_rank0,
+)
 from .shared_memory import SharedMemoryConfig  # import .shared_memory import SharedMemoryConfig
 
 # Import MPI helpers.
@@ -419,6 +424,7 @@ def run_simulation(
     save_every_s = float(output_cfg.get("save_every_s", 0.0) or 0.0)  # set save_every_s
     rotate_every_s = float(output_cfg.get("rotate_every_s", 0.0) or 0.0)  # set rotate_every_s
     outflow_geojson = output_cfg.get("outflow_geojson", None)  # set outflow_geojson
+    normalize_output_variables(cfg)  # validate output variables
     record_outflow_points = bool(outflow_geojson)  # set record_outflow_points
     if save_every_s < 0.0 or rotate_every_s < 0.0:  # check condition save_every_s < 0.0 or rotate_every_s < 0.0:
         raise ValueError("output.save_every_s and output.rotate_every_s must be non-negative.")  # raise ValueError("output.save_every_s and output.rotate_every_s must be non-negative.")

@@ -194,6 +194,8 @@ Results NetCDF contains:
 - `flood_depth_max(latitude,longitude)` and `inundation_mask_max(latitude,longitude)`
 - `time(time)` coordinate (hours since 1900-01-01 00:00:0.0)
 
+Select which of these variables are written with `output.variables` in the JSON config (`"all"` or a list of variable names).
+
 Example plot (with optional Campania bounding box and labeled municipal boundaries):
 ```bash
 python utils/output_plot.py \

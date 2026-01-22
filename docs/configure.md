@@ -570,6 +570,7 @@ Controls final NetCDF output metadata and paths.
 | `output.save_every_s` | `0` | Append a new time slice to the same NetCDF every N simulated seconds (`0` disables periodic writes). | `"save_every_s": 3600` |
 | `output.rotate_every_s` | `0` | Write a brand-new NetCDF every N simulated seconds, using the `out_netcdf` basename plus `_0000.nc`, `_0001.nc`, ... | `"rotate_every_s": 1800` |
 | `output.outflow_geojson` | `null` | When set, write a GeoJSON listing cells where particles exit to sea/lakes, with particle counts per save interval. | `"outflow_geojson": "outputs/outflow_hits.geojson"` |
+| `output.variables` | `all` | Output variables to write (`all` or list: `flood_depth`, `risk_index`, `inundation_mask`, `flood_depth_max`, `inundation_mask_max`). | `"variables": ["flood_depth", "risk_index"]` |
 | `output.Conventions` | `CF-1.10` | CF metadata convention string. | `"Conventions": "CF-1.8"` |
 | `output.title` | `LPERFECT flood depth + hydrogeological risk index` | Global title attribute. | `"title": "LPERFECT flood run"` |
 | `output.institution` | `UniParthenope` | Global institution attribute. | `"institution": "My Lab"` |
@@ -587,6 +588,13 @@ Controls final NetCDF output metadata and paths.
     "out_netcdf": "flood_depth.nc",
     "save_every_s": 3600,
     "outflow_geojson": "outputs/outflow_hits.geojson",
+    "variables": [
+      "flood_depth",
+      "risk_index",
+      "inundation_mask",
+      "flood_depth_max",
+      "inundation_mask_max"
+    ],
     "Conventions": "CF-1.10",
     "title": "LPERFECT flood depth",
     "institution": "UniParthenope"

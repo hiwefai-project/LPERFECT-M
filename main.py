@@ -204,6 +204,8 @@ def main() -> None:
         cfg["model"].setdefault("travel_time_auto", {})["min_s"] = args.travel_time_min
     if args.travel_time_max is not None:
         cfg["model"].setdefault("travel_time_auto", {})["max_s"] = args.travel_time_max
+    if args.runoff_only_risk:
+        cfg["model"]["runoff_only_risk"] = True
     metrics_root = cfg.setdefault("metrics", {})
     metrics_parallel_cfg = metrics_root.setdefault("parallelization", {})
     if args.parallel_metrics:

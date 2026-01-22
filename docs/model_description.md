@@ -9,6 +9,7 @@ LPERFECT is a **Lagrangian, particle-based hydrological model** designed to esti
 The model is optimized for **parallel execution using MPI**, supports **restartable simulations**, and is conceived for **operational and research workflows** within the **Hi-WeFAI** (*High-Performance Weather and Flood AI Systems*) project.
 
 LPERFECT is intentionally positioned between very simple runoff-index models and full two-dimensional hydrodynamic solvers. Its goal is to provide a **computationally efficient, physically interpretable flood-impact model** that can be executed rapidly, repeatedly, and at scale.
+For fast screening workflows, the model can optionally **disable Lagrangian transport** and compute the risk index directly from cumulative runoff.
 
 Typical application domains include:
 - flood nowcasting and early warning,
@@ -30,6 +31,8 @@ LPERFECT follows a modular processing pipeline:
 6. **Flood-depth reconstruction** from particle volumes.
 7. **Hydrogeological risk assessment**.
 8. **CF-compliant NetCDF outputs** and optional restart checkpoints.
+
+When `model.runoff_only_risk` is enabled, steps 3–6 are bypassed and only the runoff-driven risk index is computed.
 
 All spatial information is handled exclusively via **NetCDF datasets**, ensuring consistency and interoperability.
 
@@ -146,6 +149,7 @@ This design supports fault tolerance, long-running workflows, and ensemble execu
 ## 8. Flood-Depth Reconstruction
 
 Flood depth is reconstructed by aggregating particle volumes on the grid.
+When `model.runoff_only_risk` is enabled, flood depth is derived directly from cumulative runoff and no particle aggregation is performed.
 
 For each grid cell:
 

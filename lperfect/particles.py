@@ -29,6 +29,74 @@ class Particles:  # define class Particles
     tau: np.ndarray  # execute statement
 
 
+@dataclass  # apply decorator
+class ParticleBuffer:  # define class ParticleBuffer
+    """Growable structure-of-arrays buffer for particle fields."""  # execute statement
+
+    r: np.ndarray  # execute statement
+    c: np.ndarray  # execute statement
+    vol: np.ndarray  # execute statement
+    tau: np.ndarray  # execute statement
+    size: int  # execute statement
+
+    @classmethod
+    def from_particles(cls, p: Particles) -> "ParticleBuffer":
+        """Create a buffer initialized with existing particles."""  # execute statement
+        n = int(p.r.size)  # set n
+        return cls(  # return cls(
+            r=p.r.copy(),  # set r
+            c=p.c.copy(),  # set c
+            vol=p.vol.copy(),  # set vol
+            tau=p.tau.copy(),  # set tau
+            size=n,  # set size
+        )  # execute statement
+
+    @property
+    def capacity(self) -> int:
+        """Return current allocated capacity."""  # execute statement
+        return int(self.r.size)  # return int(self.r.size)
+
+    def _ensure_capacity(self, extra: int) -> None:
+        """Ensure arrays can fit `extra` additional particles."""  # execute statement
+        needed = self.size + int(extra)  # set needed
+        if needed <= self.capacity:  # check condition needed <= self.capacity:
+            return  # return
+        new_cap = max(needed, max(1, self.capacity) * 2)  # set new_cap
+        self.r = _grow_array(self.r, new_cap, dtype=self.r.dtype)  # execute statement
+        self.c = _grow_array(self.c, new_cap, dtype=self.c.dtype)  # execute statement
+        self.vol = _grow_array(self.vol, new_cap, dtype=self.vol.dtype)  # execute statement
+        self.tau = _grow_array(self.tau, new_cap, dtype=self.tau.dtype)  # execute statement
+
+    def append_arrays(self, r: np.ndarray, c: np.ndarray, vol: np.ndarray, tau: np.ndarray) -> None:
+        """Append particle arrays to the buffer."""  # execute statement
+        n_new = int(r.size)  # set n_new
+        if n_new == 0:  # check condition n_new == 0:
+            return  # return
+        self._ensure_capacity(n_new)  # execute statement
+        end = self.size + n_new  # set end
+        self.r[self.size : end] = r  # execute statement
+        self.c[self.size : end] = c  # execute statement
+        self.vol[self.size : end] = vol  # execute statement
+        self.tau[self.size : end] = tau  # execute statement
+        self.size = end  # set size
+
+    def to_particles(self) -> Particles:
+        """Return a trimmed Particles view of the buffer."""  # execute statement
+        return Particles(  # return Particles(
+            r=self.r[: self.size].copy(),  # set r
+            c=self.c[: self.size].copy(),  # set c
+            vol=self.vol[: self.size].copy(),  # set vol
+            tau=self.tau[: self.size].copy(),  # set tau
+        )  # execute statement
+
+
+def _grow_array(arr: np.ndarray, new_size: int, dtype: np.dtype) -> np.ndarray:
+    """Grow a 1D numpy array to a new size."""  # execute statement
+    expanded = np.empty(int(new_size), dtype=dtype)  # set expanded
+    expanded[: arr.size] = arr  # execute statement
+    return expanded  # return expanded
+
+
 def empty_particles() -> Particles:  # define function empty_particles
     """Create an empty particle container."""  # execute statement
     return Particles(  # return Particles(

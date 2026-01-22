@@ -147,7 +147,7 @@ Measurement notes:
 - Wall-clock timings come from the simulation log; mean values exclude startup/I/O. When using GPUs, only the runoff section benefits, so whole-step speedup will be lower than kernel-only speedup.
 - Particle throughput is derived from the `hops` counter divided by wall-clock runtime; it captures the combined effect of threading and vectorization within each rank.
 - Migration ratio is computed as `(migrated / total active particles) * 100` per step and helps identify decomposition changes before scaling to many nodes.
-- Slab-mode steps with zero migrants now skip Alltoall entirely, and particle-mode runs scatter only the newly spawned particles each step; both behaviors reduce synchronization noise when rain is sparse.
+- Slab-mode steps with zero migrants now skip migration entirely, and the default `agg_nonblocking` migration aggregates per-destination SoA payloads to reduce MPI overhead; particle-mode runs scatter only the newly spawned particles each step.
 - If `compute.shared_memory.enabled=true`, ensure `workers` matches the cores allocated by the launcher (e.g., `SLURM_CPUS_PER_TASK`) to reproduce the speedups above.
 
 ### Performance-tuned compute block (CPU, 4 MPI ranks)
@@ -179,7 +179,7 @@ For large national domains (e.g., 15 600 × 16 800) on a CPU-only node w
 
 - `balanced` slabs plus `min_rows_per_rank` keep ranks from owning tiny slices, which reduces migration pressure and amortizes I/O per slab.
 - `balance.auto` with a 1.5 threshold re-splits when particle load skews; `every_steps=120` forces a check every 10 minutes (with `dt_s=5 s`) for long events.
-- Neighbor-only migration kicks in automatically when particles cross only adjacent slabs, shrinking MPI traffic without changing results.
+- Aggregated nonblocking migration is the default (`compute.mpi.migration_mode="agg_nonblocking"`), and `compute.mpi.timing_every_steps` can be enabled to log per-rank timing summaries with global max reductions.
 - Shared-memory threading is enabled per rank and defaults `workers` to hardware cores; the lower `min_particles_per_worker` and smaller `chunk_size` improve throughput when particle counts ramp up gradually.
 
 ### How LPERFECT now computes and exports metrics

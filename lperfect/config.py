@@ -118,6 +118,9 @@ def default_config() -> Dict[str, Any]:  # define function default_config
                 "enabled": None,  # auto-enable only when launched under MPI  # execute statement
                 "decomposition": "auto",  # execute statement
                 "min_rows_per_rank": 1,  # execute statement
+                "migration_mode": "agg_nonblocking",  # execute statement
+                "timing_every_steps": 50,  # execute statement
+                "overlap_migration": True,  # execute statement
                 "balance": {  # execute statement
                     "every_steps": 0,  # force rebalance after N steps (0=disabled)  # execute statement
                     "every_sim_s": 0,  # force rebalance after N simulated seconds (0=disabled)  # execute statement

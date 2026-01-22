@@ -47,6 +47,7 @@ from .mpi_utils import (  # import .mpi_utils import (
     gather_particles_to_rank0,  # execute statement
     scatter_particles_from_rank0,  # execute statement
     migrate_particles_partition,  # execute statement
+    migrate_particles_partition_agg,  # execute statement
     scatter_new_particles_even,  # execute statement
     rebalance_particles_even,  # execute statement
 )  # execute statement
@@ -143,6 +144,12 @@ def run_simulation(
                 io_mode,
                 str(io_rank0_only),
             )
+            logger.info(
+                "MPI migration: mode=%s overlap=%s timing_every_steps=%d",
+                migration_mode,
+                str(overlap_migration),
+                timing_every_steps,
+            )
         if runoff_only_risk:
             logger.info("Runoff-only risk mode enabled: Lagrangian transport disabled.")
     shared_cfg = SharedMemoryConfig.from_dict(compute_cfg.get("shared_memory", {}))  # set shared_cfg
@@ -178,6 +185,11 @@ def run_simulation(
     balance_every_sim_s = float(balance_cfg.get("every_sim_s", 0.0) or 0.0)
     balance_auto = bool(balance_cfg.get("auto", False))
     balance_threshold = float(balance_cfg.get("imbalance_threshold", 2.0) or 2.0)
+    migration_mode = str(compute_cfg.get("mpi", {}).get("migration_mode", "agg_nonblocking") or "agg_nonblocking").lower().strip()
+    timing_every_steps = int(compute_cfg.get("mpi", {}).get("timing_every_steps", 50) or 0)
+    overlap_migration = bool(compute_cfg.get("mpi", {}).get("overlap_migration", True))
+    if migration_mode not in {"legacy", "agg_nonblocking"}:  # check condition migration_mode not supported:
+        raise ValueError("compute.mpi.migration_mode must be 'legacy' or 'agg_nonblocking'.")  # raise ValueError
     next_balance_time: float | None = balance_every_sim_s if balance_every_sim_s > 0.0 else None
     initial_balance_pending = bool(
         mpi_active and not particle_parallel and (balance_every_steps > 0 or balance_every_sim_s > 0.0 or balance_auto)
@@ -894,6 +906,10 @@ def run_simulation(
         runoff_t = 0.0
         advection_t = 0.0
         migration_t = 0.0
+        migration_pack_t = 0.0
+        migration_comm_t = 0.0
+        migration_unpack_t = 0.0
+        migration_overlap_t = 0.0
         active_particles_before_migration = int(particles.r.size)
         migrated_particles_global = 0
         # Elapsed time at end of step.
@@ -1014,7 +1030,19 @@ def run_simulation(
             if metrics_enabled:
                 active_particles_before_migration = int(comm.allreduce(active_particles_before_migration, op=MPI.SUM))
             mig_t0 = perf_counter()
-            particles, migrated_local = migrate_particles_partition(comm, particles, plan=partition)  # migrate and count
+            if migration_mode == "agg_nonblocking":
+                particles, migrated_local, mig_timers = migrate_particles_partition_agg(
+                    comm,
+                    particles,
+                    plan=partition,
+                    overlap=overlap_migration,
+                )
+                migration_pack_t = float(mig_timers.get("pack", 0.0))
+                migration_comm_t = float(mig_timers.get("comm", 0.0))
+                migration_unpack_t = float(mig_timers.get("unpack", 0.0))
+                migration_overlap_t = float(mig_timers.get("overlap", 0.0))
+            else:
+                particles, migrated_local = migrate_particles_partition(comm, particles, plan=partition)  # migrate and count
             migration_t = perf_counter() - mig_t0
             if metrics_enabled:
                 migrated_particles_global = int(comm.allreduce(migrated_local, op=MPI.SUM))
@@ -1096,6 +1124,10 @@ def run_simulation(
                             "runoff_spawn_s": float(runoff_t),
                             "advection_s": float(advection_t),
                             "migration_s": float(migration_t),
+                            "migration_pack_s": float(migration_pack_t),
+                            "migration_comm_s": float(migration_comm_t),
+                            "migration_unpack_s": float(migration_unpack_t),
+                            "migration_overlap_s": float(migration_overlap_t),
                         },
                         "particles": {
                             "active_before_migration": int(active_particles_before_migration),
@@ -1123,6 +1155,41 @@ def run_simulation(
                 active_particles_global,
                 particles_per_second,
             )  # execute statement
+
+        # Periodic timing summary for overlap and migration segments.
+        if timing_every_steps > 0 and ((k + 1) % timing_every_steps == 0 or (k + 1) == steps):
+            timings_local = {
+                "runoff": float(runoff_t),
+                "advection": float(advection_t),
+                "migration_pack": float(migration_pack_t),
+                "migration_comm": float(migration_comm_t),
+                "migration_unpack": float(migration_unpack_t),
+                "migration_overlap": float(migration_overlap_t),
+            }
+            logger.info(
+                "timing rank=%d step=%d runoff_s=%.4f advection_s=%.4f pack_s=%.4f comm_s=%.4f unpack_s=%.4f overlap_s=%.4f",
+                rank,
+                (k + 1),
+                timings_local["runoff"],
+                timings_local["advection"],
+                timings_local["migration_pack"],
+                timings_local["migration_comm"],
+                timings_local["migration_unpack"],
+                timings_local["migration_overlap"],
+            )
+            if size > 1:
+                timing_max = {key: float(comm.reduce(val, op=MPI.MAX, root=0)) for key, val in timings_local.items()}
+                if rank == 0:
+                    logger.info(
+                        "timing_max step=%d runoff_s=%.4f advection_s=%.4f pack_s=%.4f comm_s=%.4f unpack_s=%.4f overlap_s=%.4f",
+                        (k + 1),
+                        timing_max["runoff"],
+                        timing_max["advection"],
+                        timing_max["migration_pack"],
+                        timing_max["migration_comm"],
+                        timing_max["migration_unpack"],
+                        timing_max["migration_overlap"],
+                    )
 
         # Restart writing if enabled.
         rst_out = rst_cfg.get("out", None)  # set rst_out

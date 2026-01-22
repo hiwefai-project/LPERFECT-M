@@ -104,6 +104,9 @@
       "enabled": true,
       "decomposition": "balanced",
       "min_rows_per_rank": 512,
+      "migration_mode": "agg_nonblocking",
+      "timing_every_steps": 50,
+      "overlap_migration": true,
       "balance": {
         "every_steps": 120,
         "every_sim_s": 0,

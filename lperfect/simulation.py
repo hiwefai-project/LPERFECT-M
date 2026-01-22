@@ -951,9 +951,10 @@ def run_simulation(
         Q_slab = Q_cum_slab  # set Q_slab
         runoff_t = perf_counter() - runoff_t0
 
+        # Convert incremental runoff to meters.
+        runoff_depth_m = dQ_mm / 1000.0  # set runoff_depth_m
+
         if lagrangian_enabled:
-            # Convert incremental runoff to meters.
-            runoff_depth_m = dQ_mm / 1000.0  # set runoff_depth_m
             # Spawn new particles from incremental runoff.
             if particle_parallel and size > 1 and rank != 0:
                 newp = empty_particles()
@@ -1000,9 +1001,9 @@ def run_simulation(
             if particle_parallel and size > 1 and rank != 0:
                 spawned_vol_local = 0.0
             elif np.isscalar(dom.cell_area_m2):
-                spawned_vol_local = float((dQ_mm / 1000.0).sum() * float(dom.cell_area_m2))
+                spawned_vol_local = float((runoff_depth_m).sum() * float(dom.cell_area_m2))
             else:
-                spawned_vol_local = float(((dQ_mm / 1000.0) * dom.cell_area_m2[r0:r1, :]).sum())
+                spawned_vol_local = float((runoff_depth_m * dom.cell_area_m2[r0:r1, :]).sum())
             outflow_vol_local = 0.0
             nhops_local = 0
             outflow_points_local = Counter()

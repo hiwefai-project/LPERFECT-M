@@ -14,7 +14,7 @@ Input files (per the provided CDL) typically have:
 - reference domain (cdl/domain.cdl) for regridding
 
 Output file contains:
-- rain_rate(time, latitude, longitude) in kg m-2 s-1
+- rain_rate(time, latitude, longitude) in mm h-1
 
 Key feature (extended):
 - You can pass multiple files (or a glob) and the script will **merge time steps**
@@ -22,8 +22,7 @@ Key feature (extended):
 
 Conversion:
 - If accumulation is in mm over Δt hours:
-    rain_rate_kg_m2_s = (accum_mm / (Δt * 3600))
-  using 1 mm == 1 kg m-2 (liquid water equivalent).
+    rain_rate_mm_h = (accum_mm / Δt)
 """
 
 from __future__ import annotations
@@ -212,20 +211,21 @@ def _convert_one_dataset(
     lon_name: str,
 ) -> xr.Dataset:
     """Convert one dataset to an intermediate dataset with rain_rate."""
+    # Convert input accumulation into a floating rain field with missing values masked.
     rain_acc_mm = _mask_fill(ds[rain_var])
 
     for req in (time_name, lat_name, lon_name):
         if req not in rain_acc_mm.dims:
             raise ValueError(f"Rain variable dims {rain_acc_mm.dims} do not include required coord {req}.")
 
-    seconds = float(accum_hours) * 3600.0
-    rain_rate = rain_acc_mm / seconds
+    # Convert mm over Δt hours into mm h-1 for the output forcing format.
+    rain_rate = rain_acc_mm / float(accum_hours)
 
+    # Attach the required CF-style metadata for rainfall forcing files.
     rain_rate.attrs = {
-        "standard_name": "lwe_precipitation_rate",
-        "long_name": "rain_rate",
-        "description": f"Rain rate derived from {rain_var} (accumulated over {accum_hours} h)",
-        "units": "kg m-2 s-1",
+        "standard_name": "rainfall_rate",
+        "long_name": "rainfall_rate",
+        "units": "mm h-1",
         "source_variable": rain_var,
         "accumulation_period_hours": accum_hours,
     }
@@ -263,11 +263,9 @@ def convert_many(
     intermediate: List[xr.Dataset] = []
 
     chosen_rain_var: str = rain_var or "DELTA_RAIN"
-    fill_out: Optional[float] = None
+    fill_out: float = -9999.0
     time_units: Optional[str] = None
-    lat_attrs: dict = dict(domain["latitude"].attrs)
-    lon_attrs: dict = dict(domain["longitude"].attrs)
-    time_attrs: dict = {}
+    # Output fill value is fixed to match the expected forcing format.
 
     for idx, path in enumerate(paths):
         LOG.info("Opening input %d/%d: %s", idx + 1, len(paths), path)
@@ -285,13 +283,9 @@ def convert_many(
         if chosen_rain_var not in ds.variables:
             raise KeyError(f"Rain variable '{chosen_rain_var}' not found in {path}. Vars: {list(ds.variables)}")
 
-        if fill_out is None:
-            fill_out = _get_fill_value(ds[chosen_rain_var]) or 1.0e37
+        # Preserve input fill values for masking, but keep a fixed output fill value.
         if time_units is None:
             time_units = str(ds[time_name].attrs.get("units", "hours since 1900-01-01 00:00:0.0"))
-
-        if idx == 0:
-            time_attrs = dict(ds[time_name].attrs)
 
         inter = _convert_one_dataset(
             ds=ds,
@@ -332,32 +326,53 @@ def convert_many(
         _, first_idx = np.unique(tvals, return_index=True)
         merged = merged.isel(time=np.sort(first_idx))
 
+    # Match the expected global attributes for rain forcing inputs.
     merged.attrs = {
         "Conventions": "CF-1.10",
-        "title": "Time-dependent rain rate (converted from WRF-derived accumulation)",
-        "source": "WRF post-processed output",
-        "history": "Converted and merged by convert_wrf_rain_to_rain_time_dependent.py",
-        "input_files": ", ".join(paths),
-        "input_rain_variable": chosen_rain_var,
-        "accumulation_period_hours": float(accum_hours),
-        "reference_domain": str(Path(domain_path).resolve()),
+        "title": "Stations rainfall forcing",
+        "institution": "Unknown",
+        "source": "stations",
+        "history": f"{np.datetime_as_string(np.datetime64('now'), unit='s')}: produced/ingested",
     }
 
-    merged["time"].attrs = time_attrs
-    merged["latitude"].attrs = lat_attrs
-    merged["longitude"].attrs = lon_attrs
-    merged["latitude"].attrs.setdefault("units", "degrees_north")
-    merged["longitude"].attrs.setdefault("units", "degrees_east")
-    merged["time"].attrs.setdefault("units", time_units or "hours since 1900-01-01 00:00:0.0")
+    # Ensure coordinate metadata follows the CDL template expected by downstream tools.
+    merged["time"].attrs = {
+        "description": "Time",
+        "long_name": "time",
+        "units": time_units or "hours since 1900-01-01 00:00:0.0",
+    }
+    merged["latitude"].attrs = {
+        "description": "Latitude",
+        "long_name": "latitude",
+        "units": "degrees_north",
+    }
+    merged["longitude"].attrs = {
+        "description": "Longitude",
+        "long_name": "longitude",
+        "units": "degrees_east",
+    }
 
-    fill_out = float(fill_out or 1.0e37)
-    merged["rain_rate"].attrs["_FillValue"] = fill_out
+    # Normalize rain rate attributes and add grid mapping reference.
+    merged["rain_rate"].attrs = {
+        "long_name": "rainfall_rate",
+        "standard_name": "rainfall_rate",
+        "units": "mm h-1",
+        "grid_mapping": "crs",
+    }
 
+    # Add or normalize the grid mapping variable.
+    if "crs" in domain:
+        merged["crs"] = domain["crs"].astype("int64")
+    else:
+        merged["crs"] = xr.DataArray(np.int64(0))
+
+    # Define encodings so xarray writes the expected dtypes and fill values.
     encoding = {
-        "rain_rate": {"_FillValue": fill_out, "dtype": "float32", "zlib": True, "complevel": 4},
-        "time": {"dtype": "int32"},
-        "latitude": {"dtype": "float32"},
-        "longitude": {"dtype": "float32"},
+        "rain_rate": {"_FillValue": float(fill_out), "dtype": "float32", "zlib": True, "complevel": 4},
+        "time": {"_FillValue": np.nan, "dtype": "float64"},
+        "latitude": {"_FillValue": np.nan, "dtype": "float32"},
+        "longitude": {"_FillValue": np.nan, "dtype": "float32"},
+        "crs": {"dtype": "int64"},
     }
 
     if Path(out_path).resolve() != resolved_out_path.resolve():

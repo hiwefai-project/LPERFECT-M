@@ -19,7 +19,7 @@ The rain accumulation must be provided as **`DELTA_RAIN`**.
 
 ### Output (`rain_time_dependent`)
 The output contains:
-- `rain_rate(time, latitude, longitude)` in **kg m⁻² s⁻¹**
+- `rain_rate(time, latitude, longitude)` in **mm h⁻¹**
 - Latitude/longitude and metadata are taken from the supplied **domain NetCDF** (matching `cdl/domain.cdl`).
 
 ### New: merge multiple times into one time series
@@ -35,10 +35,8 @@ You can pass multiple file paths or globs. The script will:
 ## Physical conversion
 
 \[
-\text{rain\_rate} = \frac{\text{accumulated\_rain (mm)}}{\Delta t \cdot 3600}
+\text{rain\_rate} = \frac{\text{accumulated\_rain (mm)}}{\Delta t}
 \]
-
-Using **1 mm = 1 kg m⁻²** (liquid water equivalent).
 
 Set the accumulation window with:
 - `--accum-hours` (default 1.0)
@@ -131,17 +129,19 @@ python convert_wrf_rain_to_rain_time_dependent.py \
 `rain_rate(time, latitude, longitude)`
 
 Attributes include:
-- `standard_name = lwe_precipitation_rate`
-- `units = kg m-2 s-1`
-- `_FillValue` propagated from input (or default `1e37`)
+- `standard_name = rainfall_rate`
+- `units = mm h-1`
+- `_FillValue = -9999.0`
+- `grid_mapping = "crs"`
 - Latitude/longitude copied from the supplied domain NetCDF
 
 ### Global attributes
 Includes:
-- `input_files`
-- `input_rain_variable`
-- `accumulation_period_hours`
-- `reference_domain` (absolute path to the domain NetCDF)
+- `Conventions = CF-1.10`
+- `title = Stations rainfall forcing`
+- `institution = Unknown`
+- `source = stations`
+- `history = <timestamp>: produced/ingested`
 
 ---
 

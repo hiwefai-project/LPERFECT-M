@@ -1178,7 +1178,11 @@ def run_simulation(
                 timings_local["migration_overlap"],
             )
             if size > 1:
-                timing_max = {key: float(comm.reduce(val, op=MPI.MAX, root=0)) for key, val in timings_local.items()}
+                timing_max = {}
+                for key, val in timings_local.items():
+                    reduced_val = comm.reduce(val, op=MPI.MAX, root=0)
+                    if rank == 0:
+                        timing_max[key] = float(reduced_val)
                 if rank == 0:
                     logger.info(
                         "timing_max step=%d runoff_s=%.4f advection_s=%.4f pack_s=%.4f comm_s=%.4f unpack_s=%.4f overlap_s=%.4f",

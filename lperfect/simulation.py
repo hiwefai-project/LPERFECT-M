@@ -126,6 +126,39 @@ def run_simulation(
             size = comm.Get_size()
     mpi_active = mpi_cfg.enabled and size > 1 and comm is not None
 
+    metrics_root = cfg.get("metrics", {}) if isinstance(cfg.get("metrics", {}), dict) else {}  # set metrics_root
+    metrics_cfg = metrics_root.get("parallelization", {}) if isinstance(metrics_root, dict) else {}  # set metrics_cfg
+    metrics_enabled = bool(metrics_cfg.get("enabled", False))  # set metrics_enabled
+    metrics_output = metrics_cfg.get("output", None)  # set metrics_output
+    metrics_max_samples = int(metrics_cfg.get("max_samples", 256) or 0)  # set metrics_max_samples
+    metrics_format = str(metrics_cfg.get("format", "detailed") or "detailed")  # set metrics_format
+    if metrics_format not in {"detailed", "compact"}:  # check condition metrics_format not in {"detailed", "compact"}:
+        raise ValueError("metrics.parallelization.format must be 'detailed' or 'compact'.")  # raise ValueError
+    metrics_indent = 2 if metrics_format == "detailed" else None  # set metrics_indent
+    metrics_separators = None if metrics_format == "detailed" else (",", ":")  # set metrics_separators
+    assistant_cfg = metrics_root.get("assistant", {}) if isinstance(metrics_root, dict) else {}  # set assistant_cfg
+    assistant_metrics_enabled = bool(assistant_cfg.get("enabled", False))  # set assistant_metrics_enabled
+    assistant_metrics_output = assistant_cfg.get("output", None)  # set assistant_metrics_output
+    assistant_metrics_format = str(assistant_cfg.get("format", "detailed") or "detailed")  # set assistant_metrics_format
+    if assistant_metrics_format not in {"detailed", "compact"}:  # check condition assistant_metrics_format not valid:
+        raise ValueError("metrics.assistant.format must be 'detailed' or 'compact'.")  # raise ValueError
+    assistant_indent = 2 if assistant_metrics_format == "detailed" else None  # set assistant_indent
+    assistant_separators = None if assistant_metrics_format == "detailed" else (",", ":")  # set assistant_separators
+    balance_cfg = compute_cfg.get("mpi", {}).get("balance", {}) if isinstance(compute_cfg.get("mpi", {}), dict) else {}
+    balance_every_steps = int(balance_cfg.get("every_steps", 0) or 0)
+    balance_every_sim_s = float(balance_cfg.get("every_sim_s", 0.0) or 0.0)
+    balance_auto = bool(balance_cfg.get("auto", False))
+    balance_threshold = float(balance_cfg.get("imbalance_threshold", 2.0) or 2.0)
+    migration_mode = str(compute_cfg.get("mpi", {}).get("migration_mode", "agg_nonblocking") or "agg_nonblocking").lower().strip()
+    timing_every_steps = int(compute_cfg.get("mpi", {}).get("timing_every_steps", 50) or 0)
+    overlap_migration = bool(compute_cfg.get("mpi", {}).get("overlap_migration", True))
+    if migration_mode not in {"legacy", "agg_nonblocking"}:  # check condition migration_mode not supported:
+        raise ValueError("compute.mpi.migration_mode must be 'legacy' or 'agg_nonblocking'.")  # raise ValueError
+    next_balance_time: float | None = balance_every_sim_s if balance_every_sim_s > 0.0 else None
+    initial_balance_pending = bool(
+        mpi_active and not particle_parallel and (balance_every_steps > 0 or balance_every_sim_s > 0.0 or balance_auto)
+    )
+
     if rank == 0:  # check condition rank == 0:
         logger.info("Compute device: %s", device)  # execute statement
         logger.info(
@@ -161,39 +194,6 @@ def run_simulation(
             shared_cfg.chunk_size,
             shared_cfg.min_particles_per_worker,
         )  # execute statement
-
-    metrics_root = cfg.get("metrics", {}) if isinstance(cfg.get("metrics", {}), dict) else {}  # set metrics_root
-    metrics_cfg = metrics_root.get("parallelization", {}) if isinstance(metrics_root, dict) else {}  # set metrics_cfg
-    metrics_enabled = bool(metrics_cfg.get("enabled", False))  # set metrics_enabled
-    metrics_output = metrics_cfg.get("output", None)  # set metrics_output
-    metrics_max_samples = int(metrics_cfg.get("max_samples", 256) or 0)  # set metrics_max_samples
-    metrics_format = str(metrics_cfg.get("format", "detailed") or "detailed")  # set metrics_format
-    if metrics_format not in {"detailed", "compact"}:  # check condition metrics_format not in {"detailed", "compact"}:
-        raise ValueError("metrics.parallelization.format must be 'detailed' or 'compact'.")  # raise ValueError
-    metrics_indent = 2 if metrics_format == "detailed" else None  # set metrics_indent
-    metrics_separators = None if metrics_format == "detailed" else (",", ":")  # set metrics_separators
-    assistant_cfg = metrics_root.get("assistant", {}) if isinstance(metrics_root, dict) else {}  # set assistant_cfg
-    assistant_metrics_enabled = bool(assistant_cfg.get("enabled", False))  # set assistant_metrics_enabled
-    assistant_metrics_output = assistant_cfg.get("output", None)  # set assistant_metrics_output
-    assistant_metrics_format = str(assistant_cfg.get("format", "detailed") or "detailed")  # set assistant_metrics_format
-    if assistant_metrics_format not in {"detailed", "compact"}:  # check condition assistant_metrics_format not valid:
-        raise ValueError("metrics.assistant.format must be 'detailed' or 'compact'.")  # raise ValueError
-    assistant_indent = 2 if assistant_metrics_format == "detailed" else None  # set assistant_indent
-    assistant_separators = None if assistant_metrics_format == "detailed" else (",", ":")  # set assistant_separators
-    balance_cfg = compute_cfg.get("mpi", {}).get("balance", {}) if isinstance(compute_cfg.get("mpi", {}), dict) else {}
-    balance_every_steps = int(balance_cfg.get("every_steps", 0) or 0)
-    balance_every_sim_s = float(balance_cfg.get("every_sim_s", 0.0) or 0.0)
-    balance_auto = bool(balance_cfg.get("auto", False))
-    balance_threshold = float(balance_cfg.get("imbalance_threshold", 2.0) or 2.0)
-    migration_mode = str(compute_cfg.get("mpi", {}).get("migration_mode", "agg_nonblocking") or "agg_nonblocking").lower().strip()
-    timing_every_steps = int(compute_cfg.get("mpi", {}).get("timing_every_steps", 50) or 0)
-    overlap_migration = bool(compute_cfg.get("mpi", {}).get("overlap_migration", True))
-    if migration_mode not in {"legacy", "agg_nonblocking"}:  # check condition migration_mode not supported:
-        raise ValueError("compute.mpi.migration_mode must be 'legacy' or 'agg_nonblocking'.")  # raise ValueError
-    next_balance_time: float | None = balance_every_sim_s if balance_every_sim_s > 0.0 else None
-    initial_balance_pending = bool(
-        mpi_active and not particle_parallel and (balance_every_steps > 0 or balance_every_sim_s > 0.0 or balance_auto)
-    )
 
     # Start time for time-aware rain selection and output timestamps.
     start_time = parse_iso8601_to_datetime64(mcfg.get("start_time", None))  # set start_time

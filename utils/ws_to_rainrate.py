@@ -245,6 +245,58 @@ def _krige_grid(
     return np.asarray(grid, dtype=float)
 
 
+def _idw_grid(
+    longitudes: np.ndarray,
+    latitudes: np.ndarray,
+    values: np.ndarray,
+    grid_longitudes: np.ndarray,
+    grid_latitudes: np.ndarray,
+    power: float = 2.0,
+    min_distance_meters: float = 1.0,
+) -> np.ndarray:
+    """Perform inverse-distance weighting over the domain grid."""
+    # Prepare a latitude/longitude mesh for vectorized distance math.
+    lon_mesh = grid_longitudes[np.newaxis, :]
+    lat_mesh = grid_latitudes[:, np.newaxis]
+    # Allocate arrays for weighted sums and total weights.
+    weighted_sum = np.zeros((grid_latitudes.size, grid_longitudes.size), dtype=float)
+    weight_total = np.zeros_like(weighted_sum)
+    # Walk each station so we can accumulate IDW contributions.
+    for lon, lat, value in zip(longitudes, latitudes, values):
+        # Convert longitudinal degrees into meters for this station's latitude.
+        meters_per_degree_lon = METERS_PER_DEGREE_LAT * max(math.cos(math.radians(lat)), 1e-6)
+        # Convert degree offsets into meter offsets along each axis.
+        dx = (lon_mesh - lon) * meters_per_degree_lon
+        dy = (lat_mesh - lat) * METERS_PER_DEGREE_LAT
+        # Compute straight-line distances in meters.
+        distances = np.hypot(dx, dy)
+        # Identify grid points that coincide with the station location.
+        exact_mask = distances == 0.0
+        # Force exact matches to the station value.
+        if exact_mask.any():
+            weighted_sum[exact_mask] = value
+            weight_total[exact_mask] = np.inf
+        # Apply a minimum distance to avoid divide-by-zero in weights.
+        safe_distances = np.maximum(distances, min_distance_meters)
+        # Compute inverse-distance weights for the station.
+        weights = 1.0 / np.power(safe_distances, power)
+        # Skip updates where an exact match was already set.
+        weights = np.where(weight_total == np.inf, 0.0, weights)
+        # Accumulate weighted values and weights.
+        weighted_sum += weights * value
+        weight_total += weights
+    # Compute the weighted average for non-exact cells.
+    interpolated = np.divide(
+        weighted_sum,
+        weight_total,
+        out=np.zeros_like(weighted_sum),
+        where=(weight_total > 0) & (weight_total != np.inf),
+    )
+    # Restore exact station values where we locked them in.
+    interpolated = np.where(weight_total == np.inf, weighted_sum, interpolated)
+    return interpolated
+
+
 def _interpolate_interval(
     aggregates: dict[str, StationAggregate],
     grid_longitudes: np.ndarray,
@@ -277,13 +329,35 @@ def _interpolate_interval(
         lons = np.array([agg.longitude for agg in aggregates.values()], dtype=float)
         lats = np.array([agg.latitude for agg in aggregates.values()], dtype=float)
         vals = np.array([agg.mean for agg in aggregates.values()], dtype=float)
-        if lons.size < 3:
-            LOGGER.warning("Insufficient stations (%s) for kriging; using mean fill.", lons.size)
-            # Use the mean station value over the kriging area when kriging is unsupported.
+        # Filter out non-finite station values before interpolation.
+        valid_mask = np.isfinite(vals)
+        lons = lons[valid_mask]
+        lats = lats[valid_mask]
+        vals = vals[valid_mask]
+        if lons.size == 0:
+            # Fall back to the fill value when all station values are invalid.
             interval_grid = np.full(
                 (sub_latitudes.size, sub_longitudes.size),
-                float(np.nanmean(vals)),
+                fill_value,
                 dtype=float,
+            )
+        elif lons.size == 1:
+            LOGGER.warning("Only one station for interpolation; using station value fill.")
+            # Fill the kriging area with the single station value.
+            interval_grid = np.full(
+                (sub_latitudes.size, sub_longitudes.size),
+                float(vals[0]),
+                dtype=float,
+            )
+        elif lons.size == 2:
+            LOGGER.warning("Only two stations for interpolation; using IDW fallback.")
+            # Use inverse-distance weighting to provide a spatial gradient.
+            interval_grid = _idw_grid(
+                lons,
+                lats,
+                vals,
+                sub_longitudes,
+                sub_latitudes,
             )
         else:
             # Run kriging on the reduced grid and replace NaNs with the fill value.

@@ -187,10 +187,15 @@ def run_simulation(
     start_time = parse_iso8601_to_datetime64(mcfg.get("start_time", None))  # set start_time
     start_datetime = parse_iso8601_to_utc_datetime(mcfg.get("start_time", None))  # set start_datetime
 
-    # Precompute downstream lookup (replicated).
-    valid, ds_r, ds_c = build_downstream_index(dom.d8, encoding)  # set valid, ds_r, ds_c
-    # Static active-cell weights (reused when recomputing slab partitions).
-    active_row_weights = np.sum(dom.active_mask.astype(np.int32), axis=1).astype(np.int64)
+    valid = None
+    ds_r = None
+    ds_c = None
+    active_row_weights = None
+    if lagrangian_enabled:
+        # Precompute downstream lookup (replicated).
+        valid, ds_r, ds_c = build_downstream_index(dom.d8, encoding)  # set valid, ds_r, ds_c
+        # Static active-cell weights (reused when recomputing slab partitions).
+        active_row_weights = np.sum(dom.active_mask.astype(np.int32), axis=1).astype(np.int64)
 
     # Build a rank-aware partition plan (contiguous row slabs, load-balanced by active cells).
     if particle_parallel and mpi_active:
@@ -338,6 +343,8 @@ def run_simulation(
 
     def _compute_hop_distances(cell_area_m2: float | np.ndarray) -> np.ndarray:
         """Approximate hop distances (m) using cell area and downstream orientation."""
+        if valid is None or ds_r is None or ds_c is None:
+            raise ValueError("Downstream index not initialized for hop distance calculation.")
         nrows_loc, ncols_loc = valid.shape
         rr, cc = np.indices((nrows_loc, ncols_loc))
         dr = ds_r - rr
@@ -373,19 +380,23 @@ def run_simulation(
         ch = np.clip(dist / vel_ch, min_s, max_s).astype(np.float32)
         return hill, ch
 
-    if travel_time_mode == "auto":
-        travel_time_s, travel_time_channel_s = _compute_auto_travel_times()  # set travel_time_s
-        if rank == 0:
-            logger.info(
-                "Travel time mode=auto: hillslope median=%.3fs channel median=%.3fs",
-                float(np.median(travel_time_s[valid])),
-                float(np.median(travel_time_channel_s[valid])),
-            )
-    elif travel_time_mode == "fixed":
-        travel_time_s = travel_time_s_cfg  # set travel_time_s
-        travel_time_channel_s = travel_time_channel_s_cfg  # set travel_time_channel_s
+    if lagrangian_enabled:
+        if travel_time_mode == "auto":
+            travel_time_s, travel_time_channel_s = _compute_auto_travel_times()  # set travel_time_s
+            if rank == 0:
+                logger.info(
+                    "Travel time mode=auto: hillslope median=%.3fs channel median=%.3fs",
+                    float(np.median(travel_time_s[valid])),
+                    float(np.median(travel_time_channel_s[valid])),
+                )
+        elif travel_time_mode == "fixed":
+            travel_time_s = travel_time_s_cfg  # set travel_time_s
+            travel_time_channel_s = travel_time_channel_s_cfg  # set travel_time_channel_s
+        else:
+            raise ValueError(f"Unknown travel_time_mode '{travel_time_mode}'. Use 'fixed' or 'auto'.")
     else:
-        raise ValueError(f"Unknown travel_time_mode '{travel_time_mode}'. Use 'fixed' or 'auto'.")
+        travel_time_s = travel_time_s_cfg
+        travel_time_channel_s = travel_time_channel_s_cfg
 
     # Rain sources configuration (replicated config, rank0 reads files).
     rain_sources = build_rain_sources(cfg)  # set rain_sources

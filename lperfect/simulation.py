@@ -82,6 +82,7 @@ def run_simulation(
     travel_time_s_cfg = float(mcfg["travel_time_s"])            # Hillslope hop time (fixed).  # set travel_time_s_cfg
     travel_time_channel_s_cfg = float(mcfg["travel_time_channel_s"])  # Channel hop time (fixed).  # set travel_time_channel_s_cfg
     travel_time_auto_cfg = mcfg.get("travel_time_auto", {})     # Auto travel-time config.  # set travel_time_auto_cfg
+    runoff_only_risk = bool(mcfg.get("runoff_only_risk", False))  # Skip Lagrangian transport when True.  # set runoff_only_risk
     outflow_sink = bool(mcfg["outflow_sink"])                  # Drop particles leaving domain.  # set outflow_sink
     log_every = int(mcfg.get("log_every", 10))                 # Diagnostics frequency.  # set log_every
 
@@ -104,6 +105,7 @@ def run_simulation(
         if rank == 0:  # check condition rank == 0:
             logger.warning("GPU requested but CuPy not available; falling back to CPU.")  # execute statement
         device = "cpu"  # set device
+    lagrangian_enabled = not runoff_only_risk  # set lagrangian_enabled
     # Domain shape.
     nrows, ncols = dom.dem.shape  # set nrows, ncols
 
@@ -141,6 +143,8 @@ def run_simulation(
                 io_mode,
                 str(io_rank0_only),
             )
+        if runoff_only_risk:
+            logger.info("Runoff-only risk mode enabled: Lagrangian transport disabled.")
     shared_cfg = SharedMemoryConfig.from_dict(compute_cfg.get("shared_memory", {}))  # set shared_cfg
     if rank == 0 and shared_cfg.enabled and shared_cfg.workers > 1:  # check condition rank == 0 and shared_cfg.enabled and shared_cfg.workers > 1:
         logger.info(
@@ -183,10 +187,15 @@ def run_simulation(
     start_time = parse_iso8601_to_datetime64(mcfg.get("start_time", None))  # set start_time
     start_datetime = parse_iso8601_to_utc_datetime(mcfg.get("start_time", None))  # set start_datetime
 
-    # Precompute downstream lookup (replicated).
-    valid, ds_r, ds_c = build_downstream_index(dom.d8, encoding)  # set valid, ds_r, ds_c
-    # Static active-cell weights (reused when recomputing slab partitions).
-    active_row_weights = np.sum(dom.active_mask.astype(np.int32), axis=1).astype(np.int64)
+    valid = None
+    ds_r = None
+    ds_c = None
+    active_row_weights = None
+    if lagrangian_enabled:
+        # Precompute downstream lookup (replicated).
+        valid, ds_r, ds_c = build_downstream_index(dom.d8, encoding)  # set valid, ds_r, ds_c
+        # Static active-cell weights (reused when recomputing slab partitions).
+        active_row_weights = np.sum(dom.active_mask.astype(np.int32), axis=1).astype(np.int64)
 
     # Build a rank-aware partition plan (contiguous row slabs, load-balanced by active cells).
     if particle_parallel and mpi_active:
@@ -334,6 +343,8 @@ def run_simulation(
 
     def _compute_hop_distances(cell_area_m2: float | np.ndarray) -> np.ndarray:
         """Approximate hop distances (m) using cell area and downstream orientation."""
+        if valid is None or ds_r is None or ds_c is None:
+            raise ValueError("Downstream index not initialized for hop distance calculation.")
         nrows_loc, ncols_loc = valid.shape
         rr, cc = np.indices((nrows_loc, ncols_loc))
         dr = ds_r - rr
@@ -369,19 +380,23 @@ def run_simulation(
         ch = np.clip(dist / vel_ch, min_s, max_s).astype(np.float32)
         return hill, ch
 
-    if travel_time_mode == "auto":
-        travel_time_s, travel_time_channel_s = _compute_auto_travel_times()  # set travel_time_s
-        if rank == 0:
-            logger.info(
-                "Travel time mode=auto: hillslope median=%.3fs channel median=%.3fs",
-                float(np.median(travel_time_s[valid])),
-                float(np.median(travel_time_channel_s[valid])),
-            )
-    elif travel_time_mode == "fixed":
-        travel_time_s = travel_time_s_cfg  # set travel_time_s
-        travel_time_channel_s = travel_time_channel_s_cfg  # set travel_time_channel_s
+    if lagrangian_enabled:
+        if travel_time_mode == "auto":
+            travel_time_s, travel_time_channel_s = _compute_auto_travel_times()  # set travel_time_s
+            if rank == 0:
+                logger.info(
+                    "Travel time mode=auto: hillslope median=%.3fs channel median=%.3fs",
+                    float(np.median(travel_time_s[valid])),
+                    float(np.median(travel_time_channel_s[valid])),
+                )
+        elif travel_time_mode == "fixed":
+            travel_time_s = travel_time_s_cfg  # set travel_time_s
+            travel_time_channel_s = travel_time_channel_s_cfg  # set travel_time_channel_s
+        else:
+            raise ValueError(f"Unknown travel_time_mode '{travel_time_mode}'. Use 'fixed' or 'auto'.")
     else:
-        raise ValueError(f"Unknown travel_time_mode '{travel_time_mode}'. Use 'fixed' or 'auto'.")
+        travel_time_s = travel_time_s_cfg
+        travel_time_channel_s = travel_time_channel_s_cfg
 
     # Rain sources configuration (replicated config, rank0 reads files).
     rain_sources = build_rain_sources(cfg)  # set rain_sources
@@ -489,6 +504,8 @@ def run_simulation(
             # Scatter particles by row ownership.
             particles = scatter_particles_from_rank0(comm, partition, particles_all)  # set particles
 
+    if not lagrangian_enabled:
+        particles = empty_particles()
     if rank == 0:
         logger.debug("State arrays initialized with dtype P=%s Q=%s", P_slab.dtype, Q_slab.dtype)
 
@@ -560,6 +577,11 @@ def run_simulation(
             )
         return np.where(dom.active_mask, flood_depth, np.nan).astype(np.float32)
 
+    def _flood_from_runoff(runoff_mm: np.ndarray) -> np.ndarray:
+        """Convert cumulative runoff (mm) to depth (m), masking inactive cells."""
+        flood_depth = (runoff_mm / 1000.0).astype(np.float32, copy=False)
+        return np.where(dom.active_mask, flood_depth, np.nan).astype(np.float32)
+
     def _compute_risk_field(runoff_mm: np.ndarray, flood_depth: np.ndarray) -> np.ndarray:
         """Compute risk index if enabled, otherwise fill with NaNs."""
         nonlocal risk_accum
@@ -581,37 +603,58 @@ def run_simulation(
     def _gather_outputs_for_rank0() -> tuple[np.ndarray | None, np.ndarray | None]:
         """Gather flood depth and risk to rank0 (or return locally in serial)."""
         if size == 1:
-            volgrid = local_volgrid_from_particles_slab(particles, r0=0, r1=nrows, ncols=ncols, shared_cfg=shared_cfg)
-            flood_depth = _flood_from_volume(volgrid)
+            if lagrangian_enabled:
+                volgrid = local_volgrid_from_particles_slab(particles, r0=0, r1=nrows, ncols=ncols, shared_cfg=shared_cfg)
+                flood_depth = _flood_from_volume(volgrid)
+            else:
+                flood_depth = _flood_from_runoff(Q_slab)
             risk_field = _compute_risk_field(Q_slab, flood_depth)
             return flood_depth, risk_field
 
         if particle_parallel:
-            vol_local = local_volgrid_from_particles_slab(particles, r0=0, r1=nrows, ncols=ncols, shared_cfg=shared_cfg)
+            if lagrangian_enabled:
+                vol_local = local_volgrid_from_particles_slab(particles, r0=0, r1=nrows, ncols=ncols, shared_cfg=shared_cfg)
+                if io_rank0_only:
+                    vol_full = comm.reduce(vol_local, op=MPI.SUM, root=0)
+                    if rank == 0:
+                        flood_depth = _flood_from_volume(vol_full)
+                        risk_field = _compute_risk_field(Q_slab, flood_depth)
+                        return flood_depth, risk_field
+                    return None, None
+                vol_full = comm.allreduce(vol_local, op=MPI.SUM)
+                flood_depth = _flood_from_volume(vol_full)
+                risk_field = _compute_risk_field(Q_slab, flood_depth)
+                return flood_depth, risk_field
+            if io_rank0_only and rank == 0:
+                flood_depth = _flood_from_runoff(Q_slab)
+                risk_field = _compute_risk_field(Q_slab, flood_depth)
+                return flood_depth, risk_field
             if io_rank0_only:
-                vol_full = comm.reduce(vol_local, op=MPI.SUM, root=0)
-                if rank == 0:
-                    flood_depth = _flood_from_volume(vol_full)
-                    risk_field = _compute_risk_field(Q_slab, flood_depth)
-                    return flood_depth, risk_field
                 return None, None
-            vol_full = comm.allreduce(vol_local, op=MPI.SUM)
-            flood_depth = _flood_from_volume(vol_full)
+            flood_depth = _flood_from_runoff(Q_slab)
             risk_field = _compute_risk_field(Q_slab, flood_depth)
             return flood_depth, risk_field
 
-        volgrid_slab = local_volgrid_from_particles_slab(particles, r0=r0, r1=r1, ncols=ncols, shared_cfg=shared_cfg)
-        vol_full = gather_field_partition_to_rank0(comm, partition, volgrid_slab, nrows, ncols)
+        vol_full = None
+        if lagrangian_enabled:
+            volgrid_slab = local_volgrid_from_particles_slab(particles, r0=r0, r1=r1, ncols=ncols, shared_cfg=shared_cfg)
+            vol_full = gather_field_partition_to_rank0(comm, partition, volgrid_slab, nrows, ncols)
         Q_full = gather_field_partition_to_rank0(comm, partition, Q_slab, nrows, ncols)
         if io_rank0_only:
             if rank == 0:
-                flood_depth = _flood_from_volume(vol_full)
+                if lagrangian_enabled:
+                    flood_depth = _flood_from_volume(vol_full)
+                else:
+                    flood_depth = _flood_from_runoff(Q_full)
                 risk_field = _compute_risk_field(Q_full, flood_depth)
                 return flood_depth, risk_field
             return None, None
 
         if rank == 0:
-            flood_depth = _flood_from_volume(vol_full)
+            if lagrangian_enabled:
+                flood_depth = _flood_from_volume(vol_full)
+            else:
+                flood_depth = _flood_from_runoff(Q_full)
             risk_field = _compute_risk_field(Q_full, flood_depth)
         else:
             flood_depth = None
@@ -911,51 +954,63 @@ def run_simulation(
         # Convert incremental runoff to meters.
         runoff_depth_m = dQ_mm / 1000.0  # set runoff_depth_m
 
-        # Spawn new particles from incremental runoff.
-        if particle_parallel and size > 1 and rank != 0:
-            newp = empty_particles()
-            spawned_vol_local = 0.0
-        else:
-            newp, spawned_vol_local = spawn_particles_from_runoff_slab(  # set newp, spawned_vol_local
-                runoff_depth_m_slab=runoff_depth_m,  # set runoff_depth_m_slab
-                r0=r0,  # set r0
-                cell_area_m2=dom.cell_area_m2,  # set cell_area_m2
-                particle_vol_m3=particle_vol_m3,  # set particle_vol_m3
-                active_mask_global=dom.active_mask,  # set active_mask_global
+        if lagrangian_enabled:
+            # Spawn new particles from incremental runoff.
+            if particle_parallel and size > 1 and rank != 0:
+                newp = empty_particles()
+                spawned_vol_local = 0.0
+            else:
+                newp, spawned_vol_local = spawn_particles_from_runoff_slab(  # set newp, spawned_vol_local
+                    runoff_depth_m_slab=runoff_depth_m,  # set runoff_depth_m_slab
+                    r0=r0,  # set r0
+                    cell_area_m2=dom.cell_area_m2,  # set cell_area_m2
+                    particle_vol_m3=particle_vol_m3,  # set particle_vol_m3
+                    active_mask_global=dom.active_mask,  # set active_mask_global
+                )  # execute statement
+            if particle_parallel and mpi_active:
+                distributed_newp = scatter_new_particles_even(comm, newp)  # spread spawn evenly without touching existing layout
+                particles = concat_particles(particles, distributed_newp)  # set particles
+                new_particles_local = int(distributed_newp.r.size)
+            else:
+                particles = concat_particles(particles, newp)  # set particles
+                new_particles_local = int(newp.r.size)
+            new_particles = comm.allreduce(new_particles_local, op=MPI.SUM) if size > 1 else new_particles_local
+            total_spawned_particles += new_particles
+
+            # Optional load balancing of particles across ranks before advection.
+            _maybe_rebalance(step_idx=k, step_time_s=step_time_s)
+
+            # Advect particles.
+            advect_t0 = perf_counter()
+            particles, outflow_vol_local, nhops_local, outflow_points_local, outflow_particles_local = advect_particles_one_step(  # set particles, outflow_vol_local, nhops_local, outflow_points_local, outflow_particles_local
+                particles=particles,  # set particles
+                valid=valid,  # set valid
+                ds_r=ds_r,  # set ds_r
+                ds_c=ds_c,  # set ds_c
+                dt_s=dt_s,  # set dt_s
+                travel_time_s=travel_time_s,  # set travel_time_s
+                travel_time_channel_s=travel_time_channel_s,  # set travel_time_channel_s
+                channel_mask=dom.channel_mask,  # set channel_mask
+                outflow_sink=outflow_sink,  # set outflow_sink
+                shared_cfg=shared_cfg,  # set shared_cfg
+                track_outflow_points=record_outflow_points,  # set track_outflow_points
+                return_outflow_particles=True,  # set return_outflow_particles
             )  # execute statement
-        if particle_parallel and mpi_active:
-            distributed_newp = scatter_new_particles_even(comm, newp)  # spread spawn evenly without touching existing layout
-            particles = concat_particles(particles, distributed_newp)  # set particles
-            new_particles_local = int(distributed_newp.r.size)
+            advection_t = perf_counter() - advect_t0
         else:
-            particles = concat_particles(particles, newp)  # set particles
-            new_particles_local = int(newp.r.size)
-        new_particles = comm.allreduce(new_particles_local, op=MPI.SUM) if size > 1 else new_particles_local
-        total_spawned_particles += new_particles
-
-        # Optional load balancing of particles across ranks before advection.
-        _maybe_rebalance(step_idx=k, step_time_s=step_time_s)
-
-        # Advect particles.
-        advect_t0 = perf_counter()
-        particles, outflow_vol_local, nhops_local, outflow_points_local, outflow_particles_local = advect_particles_one_step(  # set particles, outflow_vol_local, nhops_local, outflow_points_local, outflow_particles_local
-            particles=particles,  # set particles
-            valid=valid,  # set valid
-            ds_r=ds_r,  # set ds_r
-            ds_c=ds_c,  # set ds_c
-            dt_s=dt_s,  # set dt_s
-            travel_time_s=travel_time_s,  # set travel_time_s
-            travel_time_channel_s=travel_time_channel_s,  # set travel_time_channel_s
-            channel_mask=dom.channel_mask,  # set channel_mask
-            outflow_sink=outflow_sink,  # set outflow_sink
-            shared_cfg=shared_cfg,  # set shared_cfg
-            track_outflow_points=record_outflow_points,  # set track_outflow_points
-            return_outflow_particles=True,  # set return_outflow_particles
-        )  # execute statement
-        advection_t = perf_counter() - advect_t0
+            if particle_parallel and size > 1 and rank != 0:
+                spawned_vol_local = 0.0
+            elif np.isscalar(dom.cell_area_m2):
+                spawned_vol_local = float((runoff_depth_m).sum() * float(dom.cell_area_m2))
+            else:
+                spawned_vol_local = float((runoff_depth_m * dom.cell_area_m2[r0:r1, :]).sum())
+            outflow_vol_local = 0.0
+            nhops_local = 0
+            outflow_points_local = Counter()
+            outflow_particles_local = 0
 
         # Migrate particles between slabs (MPI).
-        if size > 1 and not particle_parallel:  # check condition size > 1:
+        if lagrangian_enabled and size > 1 and not particle_parallel:  # check condition size > 1:
             if metrics_enabled:
                 active_particles_before_migration = int(comm.allreduce(active_particles_before_migration, op=MPI.SUM))
             mig_t0 = perf_counter()
@@ -965,8 +1020,8 @@ def run_simulation(
                 migrated_particles_global = int(comm.allreduce(migrated_local, op=MPI.SUM))
 
         # Compute current system volume (sum of particle volumes).
-        system_vol_local = float(particles.vol.sum())  # set system_vol_local
-        outflow_particle_count_step = int(sum(outflow_points_local.values())) if record_outflow_points else 0
+        system_vol_local = float(particles.vol.sum()) if lagrangian_enabled else 0.0  # set system_vol_local
+        outflow_particle_count_step = int(sum(outflow_points_local.values())) if (lagrangian_enabled and record_outflow_points) else 0
 
         # Reduce diagnostics to global totals.
         if size > 1:  # check condition size > 1:
@@ -991,6 +1046,9 @@ def run_simulation(
         total_outflow_particles += int(outflow_particle_count_global)
         total_hops += int(nhops)
 
+        if not lagrangian_enabled:
+            system_vol = cum_runoff - cum_outflow
+
         # Mass balance error: stored volume minus (generated - outflow).
         expected = cum_runoff - cum_outflow  # set expected
         mass_error = system_vol - expected  # set mass_error
@@ -1007,7 +1065,7 @@ def run_simulation(
             step_duration = float(comm.allreduce(step_duration_local, op=MPI.MAX))  # set step_duration
 
         # Track how many particles are currently active across all ranks.
-        active_particles_local_now = int(particles.r.size)  # set active_particles_local_now
+        active_particles_local_now = int(particles.r.size) if lagrangian_enabled else 0  # set active_particles_local_now
         active_particles_global = active_particles_local_now  # set active_particles_global
         if size > 1:  # check condition size > 1:
             active_particles_global = int(comm.allreduce(active_particles_local_now, op=MPI.SUM))  # set active_particles_global
@@ -1164,14 +1222,17 @@ def run_simulation(
     # ------------------------------
     # Final diagnostics and optional GeoJSON export
     # ------------------------------
-    final_system_vol_local = float(particles.vol.sum())
-    active_particles_local = int(particles.r.size)
+    final_system_vol_local = float(particles.vol.sum()) if lagrangian_enabled else 0.0
+    active_particles_local = int(particles.r.size) if lagrangian_enabled else 0
     if size > 1:
         final_system_vol = float(comm.allreduce(final_system_vol_local, op=MPI.SUM))
         active_particles = int(comm.allreduce(active_particles_local, op=MPI.SUM))
     else:
         final_system_vol = final_system_vol_local
         active_particles = active_particles_local
+
+    if not lagrangian_enabled:
+        final_system_vol = cum_runoff - cum_outflow
 
     if not mass_error_series:
         expected = cum_runoff - cum_outflow

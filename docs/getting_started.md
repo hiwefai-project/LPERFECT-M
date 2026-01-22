@@ -233,6 +233,7 @@ python main.py --config config.json --out-nc flood.nc
 ```
 
 If your environment exports thread-related variables (e.g., `OMP_NUM_THREADS`), set them to `1` to keep execution single-threaded.
+To skip Lagrangian routing and compute the risk index directly from runoff, add `--runoff-only-risk` (or set `model.runoff_only_risk=true` in the JSON config).
 
 ---
 

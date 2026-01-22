@@ -90,6 +90,7 @@ python main.py --config config.json --runoff-only-risk
 ### Parallelization switches (mix-and-match)
 - **MPI distributed memory**: `compute.mpi.enabled` = `true|false|null(auto)`, `compute.mpi.decomposition` = `auto|balanced|even`, `compute.mpi.min_rows_per_rank` to avoid tiny slabs. Ranks are pruned automatically when the active rows cannot satisfy the minimum-per-rank constraint. CLI overrides: `--mpi-mode`, `--mpi-decomposition`, `--mpi-min-rows`.
 - **Parallelization schema**: choose `compute.parallelization.schema="slab"` (default row slabs + migration) or `"particles"` (even particle-only distribution across ranks). Control I/O with `compute.parallelization.io="rank0"` (default) or `"all"` to write per-rank outputs (files suffixed with `_rankXXXX`). CLI overrides: `--parallel-schema` and `--parallel-io`.
+- **MPI migration tuning**: `compute.mpi.migration_mode="agg_nonblocking"` (default) for aggregated nonblocking exchanges or `"legacy"` for the older neighbor/Alltoall path; use `compute.mpi.timing_every_steps` and `compute.mpi.overlap_migration` to emit and overlap migration timing diagnostics.
 - **MPI load balancing**: `compute.mpi.balance.every_steps` / `every_sim_s` force a particle-aware rebalance on a fixed cadence; `compute.mpi.balance.auto` triggers when the max/min particle count ratio across ranks exceeds `imbalance_threshold`.
 - **Shared memory threads (per rank)**: `compute.shared_memory.enabled/workers/min_particles_per_worker/chunk_size`.
 - **GPU**: `compute.device = "gpu"` (per rank) or override with `--device gpu`.

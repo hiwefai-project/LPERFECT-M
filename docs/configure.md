@@ -282,6 +282,9 @@ and gracefully falls back to CPU if CuPy is missing.
 | `compute.mpi.enabled` | `null` | Enable/disable MPI explicitly (`true`, `false`, or `null` for auto-detect when launched under MPI). | `"enabled": true` |
 | `compute.mpi.decomposition` | `auto` | MPI row-slab decomposition strategy (`auto` or `balanced`). | `"decomposition": "balanced"` |
 | `compute.mpi.min_rows_per_rank` | `1` | Minimum grid rows per rank (prevents tiny slabs). | `"min_rows_per_rank": 8` |
+| `compute.mpi.migration_mode` | `agg_nonblocking` | Particle migration algorithm (`agg_nonblocking` or `legacy`). | `"migration_mode": "agg_nonblocking"` |
+| `compute.mpi.timing_every_steps` | `50` | Emit MPI timing summaries every N steps (0 disables). | `"timing_every_steps": 25` |
+| `compute.mpi.overlap_migration` | `true` | Overlap migration communication with local work when possible. | `"overlap_migration": false` |
 | `compute.mpi.balance.every_steps` | `0` | Force MPI rebalancing every N steps (0 disables). | `"every_steps": 250` |
 | `compute.mpi.balance.every_sim_s` | `0` | Force MPI rebalancing every N simulated seconds (0 disables). | `"every_sim_s": 1800` |
 | `compute.mpi.balance.auto` | `false` | Enable automatic load-balance when particle counts drift. | `"auto": true` |

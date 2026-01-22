@@ -11,7 +11,7 @@ This module provides:
 # NOTE: Rain NetCDF inputs follow cdl/rain_time_dependent.cdl (CF-1.10).
 
 # Import typing primitives.
-from typing import Any, List, Optional, Tuple  # import typing import Any, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple  # import typing import Any, Callable, List, Optional, Tuple
 
 # Import dataclass for structured configs.
 from dataclasses import dataclass  # import dataclasses import dataclass
@@ -22,8 +22,17 @@ import sys  # import sys
 # Import numpy for counts/displacements arrays.
 import numpy as np  # import numpy as np
 
+# Import perf_counter for lightweight timers.
+from time import perf_counter  # import time import perf_counter
+
 # Import local particle helpers.
-from .particles import Particles, empty_particles, pack_particles_to_float64, unpack_particles_from_float64  # import .particles import Particles, empty_particles, pack_particles_to_float64, unpack_particles_from_float64
+from .particles import (  # import .particles import (Particles, ParticleBuffer, empty_particles, pack_particles_to_float64, unpack_particles_from_float64)
+    Particles,
+    ParticleBuffer,
+    empty_particles,
+    pack_particles_to_float64,
+    unpack_particles_from_float64,
+)
 
 
 # Try importing mpi4py; allow serial fallback.
@@ -339,6 +348,120 @@ def migrate_particles_partition(comm, particles: Particles, plan: PartitionPlan)
     from .particles import concat_particles  # import .particles import concat_particles
 
     return concat_particles(local, received), migrated_local
+
+
+def migrate_particles_partition_agg(
+    comm,
+    particles: Particles,
+    plan: PartitionPlan,
+    overlap: bool = True,
+    overlap_work: Optional[Callable[[], None]] = None,
+) -> tuple[Particles, int, dict[str, float]]:
+    """Migrate particles with aggregated SoA buffers and nonblocking collectives."""
+    # Rank and size.
+    rank = comm.Get_rank()  # set rank
+    size = comm.Get_size()  # set size
+    # Destination rank for each particle.
+    dest = rank_of_row_partition(particles.r, plan)  # set dest
+    # Keep those that remain local.
+    keep_mask = dest == rank  # set keep_mask
+    migrated_local = int(np.count_nonzero(~keep_mask))  # count migrants for metrics
+    # Fast path: no migrants.
+    if migrated_local == 0:  # check condition migrated_local == 0:
+        local = Particles(
+            r=particles.r[keep_mask],
+            c=particles.c[keep_mask],
+            vol=particles.vol[keep_mask],
+            tau=particles.tau[keep_mask],
+        )
+        return local, 0, {"pack": 0.0, "comm": 0.0, "unpack": 0.0, "overlap": 0.0}
+
+    # Build send buffers (SoA) grouped by destination.
+    pack_t0 = perf_counter()  # set pack_t0
+    send_mask = ~keep_mask  # set send_mask
+    dest_send = dest[send_mask]  # set dest_send
+    send_counts = np.bincount(dest_send, minlength=size).astype(np.int64)  # set send_counts
+    send_counts[rank] = 0  # never send to self
+    # Order particles by destination rank to create contiguous slabs.
+    if dest_send.size > 0:  # check condition dest_send.size > 0:
+        order = np.argsort(dest_send, kind="stable")  # set order
+        r_send = np.ascontiguousarray(particles.r[send_mask][order])  # set r_send
+        c_send = np.ascontiguousarray(particles.c[send_mask][order])  # set c_send
+        vol_send = np.ascontiguousarray(particles.vol[send_mask][order])  # set vol_send
+        tau_send = np.ascontiguousarray(particles.tau[send_mask][order])  # set tau_send
+    else:  # fallback branch
+        r_send = np.zeros(0, dtype=np.int32)  # set r_send
+        c_send = np.zeros(0, dtype=np.int32)  # set c_send
+        vol_send = np.zeros(0, dtype=np.float64)  # set vol_send
+        tau_send = np.zeros(0, dtype=np.float64)  # set tau_send
+    send_displs = np.zeros(size, dtype=np.int64)  # set send_displs
+    send_displs[1:] = np.cumsum(send_counts[:-1])  # execute statement
+    pack_t = perf_counter() - pack_t0  # set pack_t
+
+    # Exchange counts to learn receive sizes.
+    comm_t0 = perf_counter()  # set comm_t0
+    recv_counts = np.zeros(size, dtype=np.int64)  # set recv_counts
+    if hasattr(comm, "Ialltoall"):  # check condition hasattr(comm, "Ialltoall"):
+        req_counts = comm.Ialltoall(send_counts, recv_counts)  # set req_counts
+        req_counts.Wait()  # execute statement
+    else:  # fallback branch
+        comm.Alltoall(send_counts, recv_counts)  # execute statement
+    recv_displs = np.zeros(size, dtype=np.int64)  # set recv_displs
+    recv_displs[1:] = np.cumsum(recv_counts[:-1])  # execute statement
+    total_recv = int(recv_counts.sum())  # set total_recv
+
+    # Allocate receive buffers (SoA).
+    r_recv = np.empty(total_recv, dtype=np.int32)  # set r_recv
+    c_recv = np.empty(total_recv, dtype=np.int32)  # set c_recv
+    vol_recv = np.empty(total_recv, dtype=np.float64)  # set vol_recv
+    tau_recv = np.empty(total_recv, dtype=np.float64)  # set tau_recv
+
+    # Map dtype to MPI datatype once.
+    mpi_int = MPI._typedict[np.dtype(np.int32).char]  # set mpi_int
+    mpi_float = MPI._typedict[np.dtype(np.float64).char]  # set mpi_float
+
+    # Post nonblocking Alltoallv for each field.
+    reqs: list[Any] = []  # set reqs
+    if hasattr(comm, "Ialltoallv"):  # check condition hasattr(comm, "Ialltoallv"):
+        reqs.append(comm.Ialltoallv([r_send, send_counts, send_displs, mpi_int], [r_recv, recv_counts, recv_displs, mpi_int]))
+        reqs.append(comm.Ialltoallv([c_send, send_counts, send_displs, mpi_int], [c_recv, recv_counts, recv_displs, mpi_int]))
+        reqs.append(
+            comm.Ialltoallv([vol_send, send_counts, send_displs, mpi_float], [vol_recv, recv_counts, recv_displs, mpi_float])
+        )
+        reqs.append(
+            comm.Ialltoallv([tau_send, send_counts, send_displs, mpi_float], [tau_recv, recv_counts, recv_displs, mpi_float])
+        )
+    else:  # fallback branch
+        comm.Alltoallv([r_send, send_counts, send_displs, mpi_int], [r_recv, recv_counts, recv_displs, mpi_int])
+        comm.Alltoallv([c_send, send_counts, send_displs, mpi_int], [c_recv, recv_counts, recv_displs, mpi_int])
+        comm.Alltoallv([vol_send, send_counts, send_displs, mpi_float], [vol_recv, recv_counts, recv_displs, mpi_float])
+        comm.Alltoallv([tau_send, send_counts, send_displs, mpi_float], [tau_recv, recv_counts, recv_displs, mpi_float])
+
+    # Overlap with local compaction and optional work.
+    overlap_t0 = perf_counter()  # set overlap_t0
+    local = Particles(
+        r=particles.r[keep_mask],
+        c=particles.c[keep_mask],
+        vol=particles.vol[keep_mask],
+        tau=particles.tau[keep_mask],
+    )
+    if overlap and overlap_work is not None:  # check condition overlap and overlap_work is not None:
+        overlap_work()  # execute statement
+    overlap_t = perf_counter() - overlap_t0  # set overlap_t
+
+    # Complete communication.
+    if reqs:  # check condition reqs:
+        MPI.Request.Waitall(reqs)  # execute statement
+    comm_t = perf_counter() - comm_t0  # set comm_t
+
+    # Unpack received arrays into the local buffer.
+    unpack_t0 = perf_counter()  # set unpack_t0
+    buffer = ParticleBuffer.from_particles(local)  # set buffer
+    buffer.append_arrays(r_recv, c_recv, vol_recv, tau_recv)  # execute statement
+    merged = buffer.to_particles()  # set merged
+    unpack_t = perf_counter() - unpack_t0  # set unpack_t
+
+    return merged, migrated_local, {"pack": pack_t, "comm": comm_t, "unpack": unpack_t, "overlap": overlap_t}
 
 
 def scatter_field_partition(

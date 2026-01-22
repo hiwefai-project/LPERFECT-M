@@ -244,6 +244,8 @@ The model produces a NetCDF file containing fields such as:
 - `risk_index(time, latitude, longitude)`
 - `time(time)` coordinate (hours since 1900-01-01 00:00:0.0)
 
+Use `output.variables` in the JSON config to choose which output variables are saved.
+
 Visualize the results directly with the provided plotting script:
 
 ```bash

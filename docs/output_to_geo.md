@@ -14,6 +14,7 @@ Additionally, it can compute **percent area above a flood depth threshold**.
 ## What it reads
 
 ### NetCDF (LPERFECT output)
+Ensure `output.variables` includes `flood_depth` and `risk_index`, since this tool expects those fields.
 Expected variables/dimensions (from the CDL):
 - Dimensions: `time`, `latitude`, `longitude`
 - Variables:

@@ -236,6 +236,8 @@ Expected variables:
 - `inundation_mask_max(latitude,longitude)` ever inundated flag (0/1)
 - `time(time)` coordinate in `hours since 1900-01-01 00:00:0.0`
 
+You can limit which of these variables are written with `output.variables` in the model configuration.
+
 When `output.save_every_s > 0`, the model **appends** a new `time` slice to the
 same NetCDF on the requested cadence (final state is always written). If
 `output.rotate_every_s > 0`, a new NetCDF is written each interval using the

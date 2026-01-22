@@ -26,6 +26,44 @@ from .domain import Domain  # import .domain import Domain
 from .particles import Particles  # import .particles import Particles
 
 TIME_UNITS = RAIN_TIME_UNITS  # execute statement
+OUTPUT_VARIABLES = (  # execute statement
+    "flood_depth",
+    "risk_index",
+    "inundation_mask",
+    "flood_depth_max",
+    "inundation_mask_max",
+)
+
+
+def normalize_output_variables(cfg: Dict[str, Any]) -> set[str]:  # define function normalize_output_variables
+    """Normalize output.variables into a validated set."""  # execute statement
+    out_cfg = cfg.get("output", {})  # set out_cfg
+    selected = out_cfg.get("variables", None)  # set selected
+    if selected is None:  # check condition selected is None
+        return set(OUTPUT_VARIABLES)  # return set(OUTPUT_VARIABLES)
+    if isinstance(selected, str):  # check condition isinstance(selected, str)
+        if selected.strip().lower() == "all":  # check condition selected is "all"
+            return set(OUTPUT_VARIABLES)  # return set(OUTPUT_VARIABLES)
+        raise ValueError("output.variables must be a list or 'all'.")  # raise ValueError
+    if not isinstance(selected, list):  # check condition not list
+        raise ValueError("output.variables must be a list of variable names.")  # raise ValueError
+    if not selected:  # check condition not selected
+        raise ValueError("output.variables must include at least one variable.")  # raise ValueError
+    normalized: list[str] = []  # set normalized
+    for item in selected:  # loop over selected
+        if not isinstance(item, str):  # check condition not string
+            raise ValueError("output.variables entries must be strings.")  # raise ValueError
+        name = item.strip()  # set name
+        if not name:  # check condition not name
+            raise ValueError("output.variables entries must be non-empty strings.")  # raise ValueError
+        if name.lower() == "all":  # check condition name is "all"
+            return set(OUTPUT_VARIABLES)  # return set(OUTPUT_VARIABLES)
+        normalized.append(name)  # execute statement
+    requested = {name for name in normalized}  # set requested
+    unknown = sorted(requested.difference(OUTPUT_VARIABLES))  # set unknown
+    if unknown:  # check condition unknown
+        raise ValueError(f"output.variables contains unknown entries: {', '.join(unknown)}")  # raise ValueError
+    return set(normalized)  # return set(normalized)
 
 
 def _coord_attrs(name: str) -> Dict[str, str]:  # define function _coord_attrs
@@ -53,6 +91,7 @@ def write_results_netcdf_rank0(
     """Write results in CF-friendly NetCDF (append-safe on time axis)."""  # execute statement
     out_cfg = cfg.get("output", {})  # set out_cfg
     inundation_threshold_m = float(out_cfg.get("inundation_threshold_m", 0.01))  # set inundation_threshold_m
+    output_vars = normalize_output_variables(cfg)  # set output_vars
 
     ds = xr.Dataset()  # set ds
     fill_value = float(out_cfg.get("fill_value", -9999.0))  # set fill_value
@@ -65,66 +104,76 @@ def write_results_netcdf_rank0(
         }  # execute statement
     )  # execute statement
 
-    ds["flood_depth"] = xr.DataArray(  # execute statement
-        flood_depth_m.astype(np.float32, copy=False)[None, ...],  # execute statement
-        dims=("time", dom.y_name, dom.x_name),  # set dims
-        attrs={  # set attrs
-            "standard_name": "water_depth",  # execute statement
-            "long_name": "Flood water depth",  # execute statement
-            "units": "m",  # execute statement
-        },  # execute statement
-    )  # execute statement
+    if "flood_depth" in output_vars:  # check condition "flood_depth" in output_vars
+        ds["flood_depth"] = xr.DataArray(  # execute statement
+            flood_depth_m.astype(np.float32, copy=False)[None, ...],  # execute statement
+            dims=("time", dom.y_name, dom.x_name),  # set dims
+            attrs={  # set attrs
+                "standard_name": "water_depth",  # execute statement
+                "long_name": "Flood water depth",  # execute statement
+                "units": "m",  # execute statement
+            },  # execute statement
+        )  # execute statement
 
-    ds["risk_index"] = xr.DataArray(  # execute statement
-        risk_index.astype(np.float32, copy=False)[None, ...],  # execute statement
-        dims=("time", dom.y_name, dom.x_name),  # set dims
-        attrs={  # set attrs
-            "long_name": "Hydrogeological risk index",  # execute statement
-            "units": "1",  # execute statement
-        },  # execute statement
-    )  # execute statement
+    if "risk_index" in output_vars:  # check condition "risk_index" in output_vars
+        ds["risk_index"] = xr.DataArray(  # execute statement
+            risk_index.astype(np.float32, copy=False)[None, ...],  # execute statement
+            dims=("time", dom.y_name, dom.x_name),  # set dims
+            attrs={  # set attrs
+                "long_name": "Hydrogeological risk index",  # execute statement
+                "units": "1",  # execute statement
+            },  # execute statement
+        )  # execute statement
 
-    ds["inundation_mask"] = xr.DataArray(  # execute statement
-        inundation_mask.astype(np.int8, copy=False)[None, ...],  # execute statement
-        dims=("time", dom.y_name, dom.x_name),  # set dims
-        attrs={  # set attrs
-            "long_name": "Inundation mask (1=inundated, 0=dry)",  # execute statement
-            "units": "1",  # execute statement
-            "flag_values": np.array([0, 1], dtype=np.int8),  # execute statement
-            "flag_meanings": "dry inundated",  # execute statement
-            "threshold_depth_m": inundation_threshold_m,  # execute statement
-        },  # execute statement
-    )  # execute statement
+    if "inundation_mask" in output_vars:  # check condition "inundation_mask" in output_vars
+        ds["inundation_mask"] = xr.DataArray(  # execute statement
+            inundation_mask.astype(np.int8, copy=False)[None, ...],  # execute statement
+            dims=("time", dom.y_name, dom.x_name),  # set dims
+            attrs={  # set attrs
+                "long_name": "Inundation mask (1=inundated, 0=dry)",  # execute statement
+                "units": "1",  # execute statement
+                "flag_values": np.array([0, 1], dtype=np.int8),  # execute statement
+                "flag_meanings": "dry inundated",  # execute statement
+                "threshold_depth_m": inundation_threshold_m,  # execute statement
+            },  # execute statement
+        )  # execute statement
 
-    ds["flood_depth_max"] = xr.DataArray(  # execute statement
-        flood_depth_max.astype(np.float32, copy=False),  # execute statement
-        dims=(dom.y_name, dom.x_name),  # set dims
-        attrs={  # set attrs
-            "long_name": "Maximum flood water depth over simulation",  # execute statement
-            "units": "m",  # execute statement
-        },  # execute statement
-    )  # execute statement
+    if "flood_depth_max" in output_vars:  # check condition "flood_depth_max" in output_vars
+        ds["flood_depth_max"] = xr.DataArray(  # execute statement
+            flood_depth_max.astype(np.float32, copy=False),  # execute statement
+            dims=(dom.y_name, dom.x_name),  # set dims
+            attrs={  # set attrs
+                "long_name": "Maximum flood water depth over simulation",  # execute statement
+                "units": "m",  # execute statement
+            },  # execute statement
+        )  # execute statement
 
-    ds["inundation_mask_max"] = xr.DataArray(  # execute statement
-        inundation_mask_max.astype(np.int8, copy=False),  # execute statement
-        dims=(dom.y_name, dom.x_name),  # set dims
-        attrs={  # set attrs
-            "long_name": "Ever inundated during simulation",  # execute statement
-            "units": "1",  # execute statement
-            "flag_values": np.array([0, 1], dtype=np.int8),  # execute statement
-            "flag_meanings": "never_inundated inundated",  # execute statement
-            "threshold_depth_m": inundation_threshold_m,  # execute statement
-        },  # execute statement
-    )  # execute statement
+    if "inundation_mask_max" in output_vars:  # check condition "inundation_mask_max" in output_vars
+        ds["inundation_mask_max"] = xr.DataArray(  # execute statement
+            inundation_mask_max.astype(np.int8, copy=False),  # execute statement
+            dims=(dom.y_name, dom.x_name),  # set dims
+            attrs={  # set attrs
+                "long_name": "Ever inundated during simulation",  # execute statement
+                "units": "1",  # execute statement
+                "flag_values": np.array([0, 1], dtype=np.int8),  # execute statement
+                "flag_meanings": "never_inundated inundated",  # execute statement
+                "threshold_depth_m": inundation_threshold_m,  # execute statement
+            },  # execute statement
+        )  # execute statement
 
     if dom.grid_mapping_name and dom.grid_mapping_attrs:  # check condition dom.grid_mapping_name and dom.grid_mapping_attrs:
         gm = dom.grid_mapping_name  # set gm
         ds[gm] = xr.DataArray(0, attrs=dom.grid_mapping_attrs)  # execute statement
-        ds["flood_depth"].attrs["grid_mapping"] = gm  # execute statement
-        ds["risk_index"].attrs["grid_mapping"] = gm  # execute statement
-        ds["inundation_mask"].attrs["grid_mapping"] = gm  # execute statement
-        ds["flood_depth_max"].attrs["grid_mapping"] = gm  # execute statement
-        ds["inundation_mask_max"].attrs["grid_mapping"] = gm  # execute statement
+        if "flood_depth" in ds:  # check condition "flood_depth" in ds
+            ds["flood_depth"].attrs["grid_mapping"] = gm  # execute statement
+        if "risk_index" in ds:  # check condition "risk_index" in ds
+            ds["risk_index"].attrs["grid_mapping"] = gm  # execute statement
+        if "inundation_mask" in ds:  # check condition "inundation_mask" in ds
+            ds["inundation_mask"].attrs["grid_mapping"] = gm  # execute statement
+        if "flood_depth_max" in ds:  # check condition "flood_depth_max" in ds
+            ds["flood_depth_max"].attrs["grid_mapping"] = gm  # execute statement
+        if "inundation_mask_max" in ds:  # check condition "inundation_mask_max" in ds
+            ds["inundation_mask_max"].attrs["grid_mapping"] = gm  # execute statement
 
     ds.attrs["title"] = out_cfg.get("title", "LPERFECT flood depth + hydrogeological risk index")  # execute statement
     ds.attrs["institution"] = out_cfg.get("institution", "")  # execute statement
@@ -134,14 +183,11 @@ def write_results_netcdf_rank0(
     ds.attrs["lperfect_config_json"] = json.dumps(cfg, separators=(",", ":"), sort_keys=True)  # execute statement
     ds.attrs["inundation_threshold_m"] = inundation_threshold_m  # execute statement
 
-    to_netcdf_kwargs: Dict[str, Any] = {
-        "encoding": {
-            "flood_depth": {"_FillValue": fill_value},
-            "risk_index": {"_FillValue": fill_value},
-            "flood_depth_max": {"_FillValue": fill_value},
-        },
-        "mode": mode,
-    }  # set to_netcdf_kwargs
+    encoding: Dict[str, Dict[str, Any]] = {}  # set encoding
+    for name in ("flood_depth", "risk_index", "flood_depth_max"):  # loop over float outputs
+        if name in ds:  # check condition name in ds
+            encoding[name] = {"_FillValue": fill_value}  # execute statement
+    to_netcdf_kwargs: Dict[str, Any] = {"encoding": encoding, "mode": mode}  # set to_netcdf_kwargs
     if mode == "a":  # check condition mode == "a":
         to_netcdf_kwargs["unlimited_dims"] = ("time",)  # execute statement
     ds.to_netcdf(out_path, **to_netcdf_kwargs)  # execute statement

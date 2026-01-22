@@ -110,6 +110,13 @@ Save the following as `config_use_case_03.json` (or adjust your config). It blen
         "save_every_s": 0,
         "rotate_every_s": 3600,
         "outflow_geojson": null,
+        "variables": [
+          "flood_depth",
+          "risk_index",
+          "inundation_mask",
+          "flood_depth_max",
+          "inundation_mask_max"
+        ],
         "Conventions": "CF-1.10",
         "title": "LPERFECT flood depth + hydrogeological risk index",
         "institution": "UniParthenope"
@@ -200,6 +207,13 @@ Save the following as `config_use_case_03.json` (or adjust your config). It blen
     "save_every_s": 0,
     "rotate_every_s": 3600,
     "outflow_geojson": null,
+    "variables": [
+      "flood_depth",
+      "risk_index",
+      "inundation_mask",
+      "flood_depth_max",
+      "inundation_mask_max"
+    ],
     "Conventions": "CF-1.10",
     "title": "LPERFECT flood depth + hydrogeological risk index",
     "institution": "UniParthenope"

@@ -104,6 +104,13 @@ def default_config() -> Dict[str, Any]:  # define function default_config
             "save_every_s": 0,  # execute statement
             "rotate_every_s": 0,  # execute statement
             "outflow_geojson": None,  # execute statement
+            "variables": [
+                "flood_depth",
+                "risk_index",
+                "inundation_mask",
+                "flood_depth_max",
+                "inundation_mask_max",
+            ],
             "Conventions": CF_CONVENTIONS,  # execute statement
             "title": "LPERFECT flood depth + hydrogeological risk index",  # execute statement
             "institution": "UniParthenope",  # execute statement

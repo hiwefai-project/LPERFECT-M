@@ -236,10 +236,16 @@ def main() -> None:
     setup_logging(args.log_level, rank)
     logger = logging.getLogger("lperfect")
     if rank == 0 and not mpi_active and mpi_world_size > 1:
-        logger.info(
-            "MPI explicitly disabled in configuration; running serial on rank0 (world_size=%d).",
-            mpi_world_size,
-        )
+        if not HAVE_MPI:
+            logger.info(
+                "MPI launcher detected but mpi4py is unavailable; running serial on rank0 (world_size=%d).",
+                mpi_world_size,
+            )
+        else:
+            logger.info(
+                "MPI explicitly disabled in configuration; running serial on rank0 (world_size=%d).",
+                mpi_world_size,
+            )
 
     # Normalize domains (support single domain object or list under cfg['domains']).
     default_domain_cfg = cfg.get("domain", {})

@@ -16,6 +16,9 @@ from typing import Any, Callable, List, Optional, Tuple  # import typing import 
 # Import dataclass for structured configs.
 from dataclasses import dataclass  # import dataclasses import dataclass
 
+# Import os for MPI launcher environment detection.
+import os  # import os
+
 # Import sys for optional early exits when MPI is disabled explicitly.
 import sys  # import sys
 
@@ -60,10 +63,40 @@ class MPIConfig:
         enabled = bool(enabled_raw) if enabled_raw is not None else (HAVE_MPI and world > 1)
         # If mpi4py is missing, force-disable even if the user requested it.
         if enabled and not HAVE_MPI:
-            enabled = False
+            raise RuntimeError(
+                "MPI was explicitly enabled, but mpi4py is not available. "
+                "Install mpi4py (and ensure an MPI runtime is loaded) or set "
+                "compute.mpi.enabled=false to force serial execution."
+            )
         decomposition = str(cfg.get("decomposition", "auto") or "auto").lower()
         min_rows = max(1, int(cfg.get("min_rows_per_rank", 1) or 1))
         return cls(enabled=enabled, decomposition=decomposition, min_rows_per_rank=min_rows)
+
+
+def detect_mpi_launcher() -> tuple[int, int]:
+    """Best-effort MPI launcher detection via environment variables."""
+    # Check common MPI runtime environment variables in priority order.
+    candidates = (
+        ("OMPI_COMM_WORLD_SIZE", "OMPI_COMM_WORLD_RANK"),
+        ("PMI_SIZE", "PMI_RANK"),
+        ("PMIX_SIZE", "PMIX_RANK"),
+        ("SLURM_NTASKS", "SLURM_PROCID"),
+    )
+    for size_key, rank_key in candidates:
+        size_raw = os.environ.get(size_key)
+        if size_raw is None:
+            continue
+        try:
+            size = int(size_raw)
+        except ValueError:
+            continue
+        rank_raw = os.environ.get(rank_key, "0")
+        try:
+            rank = int(rank_raw)
+        except ValueError:
+            rank = 0
+        return size, rank
+    return 1, 0
 
 
 @dataclass(frozen=True)
@@ -109,6 +142,12 @@ def get_comm(force_disabled: bool = False) -> tuple[Any, int, int]:  # define fu
 def initialize_mpi(mpi_cfg: MPIConfig) -> tuple[Any, int, int, int, bool]:
     """Return (comm, rank, size, world_size, active) honoring user MPI preferences."""
     if not HAVE_MPI:
+        world_size, world_rank = detect_mpi_launcher()
+        # If launched under an MPI launcher without mpi4py, avoid duplicate runs.
+        if world_size > 1:
+            if world_rank != 0:
+                sys.exit(0)
+            return None, 0, 1, world_size, False
         return None, 0, 1, 1, False
 
     world = MPI.COMM_WORLD

@@ -336,11 +336,15 @@ def convert_many(
     }
 
     # Ensure coordinate metadata follows the CDL template expected by downstream tools.
+    # NOTE: datetime64 time coordinates cannot keep a "units" attribute without
+    # clashing with xarray's encoding step, so we move units into encoding below.
+    time_units_to_use = time_units or "hours since 1900-01-01 00:00:0.0"
     merged["time"].attrs = {
         "description": "Time",
         "long_name": "time",
-        "units": time_units or "hours since 1900-01-01 00:00:0.0",
     }
+    if not np.issubdtype(merged["time"].dtype, np.datetime64):
+        merged["time"].attrs["units"] = time_units_to_use
     merged["latitude"].attrs = {
         "description": "Latitude",
         "long_name": "latitude",
@@ -374,6 +378,8 @@ def convert_many(
         "longitude": {"_FillValue": np.nan, "dtype": "float32"},
         "crs": {"dtype": "int64"},
     }
+    if np.issubdtype(merged["time"].dtype, np.datetime64):
+        encoding["time"]["units"] = time_units_to_use
 
     if Path(out_path).resolve() != resolved_out_path.resolve():
         LOG.info("Resolved output path from %s to %s", out_path, resolved_out_path)

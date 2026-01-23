@@ -34,6 +34,16 @@ from shapely.geometry import shape, Polygon, MultiPolygon, Point, LineString, Mu
 from shapely.ops import transform as shp_transform
 from shapely.prepared import prep
 
+# Optional fast zonal stats (rasterization). If unavailable, we fall back to exact (slow) geometry-cell intersections.
+try:
+    import rasterio
+    from rasterio import features as rio_features
+    from rasterio.transform import Affine
+except Exception:  # pragma: no cover
+    rasterio = None
+    rio_features = None
+    Affine = None
+
 LOG = logging.getLogger("output_to_geo")
 
 LAT_NAME = "latitude"
@@ -223,7 +233,145 @@ def _load_geojson_feature_collection(path: str) -> Dict[str, Any]:
     return gj
 
 
-def compute_area_stats(
+
+def _grid_is_regular(edges: np.ndarray, rtol: float = 1e-6, atol: float = 0.0) -> bool:
+    """Return True if edge spacing is (approximately) constant."""
+    e = np.asarray(edges, dtype=float)
+    if e.size < 3:
+        return True
+    d = np.diff(e)
+    dm = float(np.mean(np.abs(d)))
+    if dm == 0.0:
+        return False
+    return bool(np.allclose(np.abs(d), dm, rtol=rtol, atol=atol))
+
+
+def _build_affine_from_edges(lon_edges: np.ndarray, lat_edges: np.ndarray) -> Tuple["Affine", bool]:
+    """
+    Build a rasterio Affine transform from 1D lon/lat edges.
+
+    Returns (transform, flip_lat):
+      - transform maps pixel coordinates (col,row) to lon/lat.
+      - flip_lat indicates whether data must be flipped along latitude to match
+        rasterio row order (north->south).
+    """
+    if Affine is None:
+        raise RuntimeError("rasterio is not available")
+
+    lon_e = np.asarray(lon_edges, dtype=float)
+    lat_e = np.asarray(lat_edges, dtype=float)
+
+    # Use constant resolution assumption (regular grid).
+    if not _grid_is_regular(lon_e) or not _grid_is_regular(lat_e):
+        raise ValueError("Non-regular lon/lat grid: cannot rasterize safely.")
+
+    xres = float(np.mean(np.abs(np.diff(lon_e))))
+    yres = float(np.mean(np.abs(np.diff(lat_e))))
+
+    west = float(min(lon_e[0], lon_e[-1]))
+    north = float(max(lat_e[0], lat_e[-1]))
+
+    # rasterio expects row=0 at north, col=0 at west.
+    transform = Affine.translation(west, north) * Affine.scale(xres, -yres)
+
+    # If latitude edges are ascending (south->north), the data's first row is south.
+    flip_lat = True if lat_e[1] > lat_e[0] else False
+    return transform, flip_lat
+
+
+def compute_area_stats_fast(
+    geom_4326,
+    *,
+    transform: "Affine",
+    out_shape: Tuple[int, int],
+    flood_np: np.ndarray,
+    risk_np: np.ndarray,
+    fill_flood: Any,
+    fill_risk: Any,
+    lat_centers_for_rows: np.ndarray,
+    depth_thr_m: Optional[float],
+    all_touched: bool = False,
+    area_weighting: str = "coslat",
+) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float], Optional[float]]:
+    """
+    Very fast zonal stats via rasterization on the model grid.
+
+    - Assumes the model grid is a regular lon/lat grid defined by lon/lat edges.
+    - Uses a binary mask created by rasterio.features.rasterize.
+    - Mean is area-weighted using a fast approximation:
+        * area_weighting="coslat": weights ~ cos(latitude) (good for lon/lat grids)
+        * area_weighting="none": unweighted mean over selected cells
+    """
+    if rio_features is None:
+        raise RuntimeError("rasterio is not available")
+    if geom_4326.is_empty:
+        return None, None, None, None, None
+
+    mask = rio_features.rasterize(
+        [(geom_4326, 1)],
+        out_shape=out_shape,
+        transform=transform,
+        fill=0,
+        dtype="uint8",
+        all_touched=bool(all_touched),
+    ).astype(bool)
+
+    if not np.any(mask):
+        return None, None, None, None, None
+
+    flood = flood_np
+    risk = risk_np
+
+    f_valid = np.isfinite(flood)
+    r_valid = np.isfinite(risk)
+    if fill_flood is not None and _is_finite(fill_flood):
+        f_valid &= (flood != float(fill_flood))
+    if fill_risk is not None and _is_finite(fill_risk):
+        r_valid &= (risk != float(fill_risk))
+
+    both_valid = mask & f_valid & r_valid
+
+    fmean = rmean = fmax = rmax = None
+    if np.any(both_valid):
+        if area_weighting == "coslat":
+            w_row = np.cos(np.deg2rad(lat_centers_for_rows)).astype(np.float64)
+            w = w_row[:, None]
+            w_sel = w[both_valid]
+            ws = float(np.sum(w_sel))
+            if ws > 0.0:
+                fmean = float(np.sum(flood[both_valid].astype(np.float64) * w_sel) / ws)
+                rmean = float(np.sum(risk[both_valid].astype(np.float64) * w_sel) / ws)
+            else:
+                fmean = float(np.nanmean(flood[both_valid]))
+                rmean = float(np.nanmean(risk[both_valid]))
+        else:
+            fmean = float(np.nanmean(flood[both_valid]))
+            rmean = float(np.nanmean(risk[both_valid]))
+
+        fmax = float(np.nanmax(flood[both_valid]))
+        rmax = float(np.nanmax(risk[both_valid]))
+
+    fpct = None
+    if depth_thr_m is not None:
+        d_valid = mask & f_valid
+        if np.any(d_valid):
+            if area_weighting == "coslat":
+                w_row = np.cos(np.deg2rad(lat_centers_for_rows)).astype(np.float64)
+                w = w_row[:, None]
+                denom = float(np.sum(w[d_valid]))
+                if denom > 0.0:
+                    numer = float(np.sum(w[d_valid & (flood > float(depth_thr_m))]))
+                    fpct = 100.0 * (numer / denom)
+            else:
+                denom = int(np.count_nonzero(d_valid))
+                if denom > 0:
+                    numer = int(np.count_nonzero(d_valid & (flood > float(depth_thr_m))))
+                    fpct = 100.0 * (numer / float(denom))
+
+    return fmean, fmax, rmean, rmax, fpct
+
+
+def compute_area_stats_exact(
     geom_4326,
     lat_edges: np.ndarray,
     lon_edges: np.ndarray,
@@ -235,9 +383,8 @@ def compute_area_stats(
     depth_thr_m: Optional[float],
 ) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float], Optional[float]]:
     """
-    Returns:
-      flood_mean, flood_max, risk_mean, risk_max, flood_pct_gt_thr
-    Percent is computed over VALID intersected area (depth-valid cells).
+    Exact (but very slow) area-weighted zonal stats by intersecting each overlapped grid cell.
+    Kept for validation/debugging or when rasterization is impossible.
     """
     geom_area = shp_transform(lambda x, y, z=None: to_area_from4326.transform(x, y), geom_4326)
     if geom_area.is_empty:
@@ -308,6 +455,7 @@ def compute_area_stats(
     return flood_mean, flood_max, risk_mean, risk_max, flood_pct
 
 
+
 def _process_feature(
     idx: int,
     feat: Dict[str, Any],
@@ -325,6 +473,13 @@ def _process_feature(
     to_area: Transformer,
     back_to_4326: Transformer,
     risk_thr_tuple: Optional[Tuple[float, float, float]],
+    # Fast zonal stats context (optional)
+    stats_mode: str,
+    raster_transform: Optional["Affine"],
+    raster_out_shape: Optional[Tuple[int, int]],
+    flood_np: Optional[np.ndarray],
+    risk_np: Optional[np.ndarray],
+    lat_rows: Optional[np.ndarray],
 ) -> Dict[str, Any]:
     """
     Process a single feature and return a small dict with results.
@@ -421,17 +576,51 @@ def _process_feature(
 
     # ----- AREA: Polygon/MultiPolygon (and buffered point/line) -----
     if isinstance(geom_4326, (Polygon, MultiPolygon)):
-        fmean, fmax, rmean, rmax, fpct = compute_area_stats(
-            geom_4326=geom_4326,
-            lat_edges=lat_edges,
-            lon_edges=lon_edges,
-            flood2d=flood2d,
-            risk2d=risk2d,
-            fill_flood=fill_flood,
-            fill_risk=fill_risk,
-            to_area_from4326=to_area,
-            depth_thr_m=args.depth_threshold_m,
-        )
+        fmean = fmax = rmean = rmax = fpct = None
+        use_fast = (stats_mode in ("auto", "fast")) and (raster_transform is not None) and (raster_out_shape is not None) and (flood_np is not None) and (risk_np is not None) and (lat_rows is not None)
+        if use_fast:
+            try:
+                fmean, fmax, rmean, rmax, fpct = compute_area_stats_fast(
+                    geom_4326,
+                    transform=raster_transform,
+                    out_shape=raster_out_shape,
+                    flood_np=flood_np,
+                    risk_np=risk_np,
+                    fill_flood=fill_flood,
+                    fill_risk=fill_risk,
+                    lat_centers_for_rows=lat_rows,
+                    depth_thr_m=args.depth_threshold_m,
+                    all_touched=args.all_touched,
+                    area_weighting=args.area_weighting,
+                )
+            except Exception as exc:
+                # Fall back to exact if fast mode fails (e.g., non-regular grid).
+                LOG.debug("Fast zonal stats failed for feature %s: %s; falling back to exact.", idx, exc)
+                if stats_mode == "fast":
+                    raise
+                fmean, fmax, rmean, rmax, fpct = compute_area_stats_exact(
+                    geom_4326=geom_4326,
+                    lat_edges=lat_edges,
+                    lon_edges=lon_edges,
+                    flood2d=flood2d,
+                    risk2d=risk2d,
+                    fill_flood=fill_flood,
+                    fill_risk=fill_risk,
+                    to_area_from4326=to_area,
+                    depth_thr_m=args.depth_threshold_m,
+                )
+        else:
+            fmean, fmax, rmean, rmax, fpct = compute_area_stats_exact(
+                geom_4326=geom_4326,
+                lat_edges=lat_edges,
+                lon_edges=lon_edges,
+                flood2d=flood2d,
+                risk2d=risk2d,
+                fill_flood=fill_flood,
+                fill_risk=fill_risk,
+                to_area_from4326=to_area,
+                depth_thr_m=args.depth_threshold_m,
+            )
 
         props[args.prop_flood_mean] = fmean
         props[args.prop_flood_max] = fmax
@@ -490,6 +679,27 @@ def main() -> int:
     ap.add_argument("--point-buffer-m", type=float, default=0.0)
 
     ap.add_argument("--depth-threshold-m", type=float, default=None)
+
+    # ---- zonal statistics performance options ----
+    ap.add_argument(
+        "--stats-mode",
+        choices=["auto", "fast", "exact"],
+        default="auto",
+        help="Zonal stats mode. 'fast' uses rasterization on the regular lon/lat grid (requires rasterio); "
+             "'exact' uses polygon-cell intersections (very slow); 'auto' tries fast then falls back to exact.",
+    )
+    ap.add_argument(
+        "--all-touched",
+        action="store_true",
+        help="When using fast rasterization, include all cells touched by the geometry boundary (faster but less conservative).",
+    )
+    ap.add_argument(
+        "--area-weighting",
+        choices=["coslat", "none"],
+        default="coslat",
+        help="Weighting for fast means on lon/lat grids. 'coslat' approximates true cell areas; 'none' is unweighted.",
+    )
+
 
     # ---- risk class options ----
     ap.add_argument("--prop-risk-class", default="risk_index_class",
@@ -555,6 +765,44 @@ def main() -> int:
     flood2d = ds[FLOOD_NAME].isel({TIME_NAME: args.time_index})
     risk2d = ds[RISK_NAME].isel({TIME_NAME: args.time_index})
 
+    # Materialize 2D slices once (avoid per-cell xarray indexing in hot loops).
+    # Keep as float32 for cache efficiency; computations use float64 where needed.
+    flood_np = np.asarray(flood2d.values, dtype=np.float32)
+    risk_np = np.asarray(risk2d.values, dtype=np.float32)
+
+    # ---- Fast zonal stats context (rasterization on the lon/lat grid) ----
+    raster_transform = None
+    raster_out_shape = None
+    lat_rows = None
+
+    if args.stats_mode in ("auto", "fast"):
+        if rio_features is None:
+            if args.stats_mode == "fast":
+                raise RuntimeError("stats-mode=fast requires 'rasterio' (pip install rasterio).")
+            LOG.info("rasterio not available -> falling back to exact zonal stats.")
+        else:
+            try:
+                raster_transform, flip_lat = _build_affine_from_edges(lon_edges, lat_edges)
+                raster_out_shape = (int(flood_np.shape[0]), int(flood_np.shape[1]))
+
+                # Align arrays to raster row order (north->south).
+                if flip_lat:
+                    flood_np = np.flipud(flood_np)
+                    risk_np = np.flipud(risk_np)
+                    lat_rows = np.asarray(lat[::-1], dtype=np.float64)
+                else:
+                    lat_rows = np.asarray(lat, dtype=np.float64)
+
+                LOG.info("Using fast zonal stats (rasterize) on %s x %s grid.", raster_out_shape[0], raster_out_shape[1])
+            except Exception as exc:
+                if args.stats_mode == "fast":
+                    raise
+                LOG.info("Cannot enable fast zonal stats (%s) -> falling back to exact.", exc)
+                raster_transform = None
+                raster_out_shape = None
+                lat_rows = None
+
+
     fill_flood = ds[FLOOD_NAME].attrs.get("_FillValue", None)
     fill_risk = ds[RISK_NAME].attrs.get("_FillValue", None)
 
@@ -592,6 +840,12 @@ def main() -> int:
                     to_area=to_area,
                     back_to_4326=back_to_4326,
                     risk_thr_tuple=risk_thr_tuple,
+                    stats_mode=args.stats_mode,
+                    raster_transform=raster_transform,
+                    raster_out_shape=raster_out_shape,
+                    flood_np=flood_np,
+                    risk_np=risk_np,
+                    lat_rows=lat_rows,
                 ): idx
                 for idx in my_indices
             }
@@ -616,6 +870,12 @@ def main() -> int:
                     to_area=to_area,
                     back_to_4326=back_to_4326,
                     risk_thr_tuple=risk_thr_tuple,
+                    stats_mode=args.stats_mode,
+                    raster_transform=raster_transform,
+                    raster_out_shape=raster_out_shape,
+                    flood_np=flood_np,
+                    risk_np=risk_np,
+                    lat_rows=lat_rows,
                 )
             )
 

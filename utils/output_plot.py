@@ -261,6 +261,25 @@ def load_vectors(path: str):
     return gdf
 
 
+def _clip_vectors_to_domain(gdf, extent: List[float]):
+    """Clip vector overlay to the plotting extent (lon/lat bounding box)."""
+    try:
+        from shapely.geometry import box  # type: ignore
+    except Exception as e:
+        raise RuntimeError("shapely not installed. Install: pip install shapely") from e
+
+    min_lon, max_lon, min_lat, max_lat = extent
+    # Build a rectangular domain polygon to constrain the overlay to the map bounds.
+    domain_geom = box(min_lon, min_lat, max_lon, max_lat)
+    try:
+        clipped = gdf.clip(domain_geom)
+    except Exception:
+        # Fallback for older geopandas: filter + intersect manually.
+        clipped = gdf[gdf.intersects(domain_geom)].copy()
+        clipped["geometry"] = clipped.geometry.intersection(domain_geom)
+    return clipped
+
+
 # -----------------------------
 # Plotting
 # -----------------------------
@@ -290,6 +309,7 @@ def plot_one(
     vector_alpha: float,
     overlay_label_field: Optional[str],
     overlay_label_size: float,
+    overlay_labels: bool,
     dpi: int,
 ) -> None:
     """Render one map: DEM hillshade + flood overlay."""
@@ -376,29 +396,36 @@ def plot_one(
     if overlay_vectors:
         try:
             gdf = load_vectors(overlay_vectors)
-            gdf.boundary.plot(ax=ax, linewidth=vector_linewidth, alpha=vector_alpha)
-
-            label_col = _pick_label_column(gdf, overlay_label_field)
-            if label_col:
-                for _, row in gdf.iterrows():
-                    geom = row.geometry
-                    label = row[label_col]
-                    if geom is None or geom.is_empty or label is None or (isinstance(label, (float, np.floating)) and np.isnan(label)):
-                        continue
-                    centroid = geom.centroid
-                    ax.text(
-                        centroid.x,
-                        centroid.y,
-                        str(label),
-                        ha="center",
-                        va="center",
-                        fontsize=overlay_label_size,
-                        color="black",
-                        alpha=vector_alpha,
-                        path_effects=[pe.withStroke(linewidth=1.5, foreground="white")],
-                    )
+            gdf = _clip_vectors_to_domain(gdf, extent)
+            if gdf.empty:
+                LOG.info("Overlay provided but no features intersect the plotting domain; skipping overlay.")
             else:
-                LOG.info("Overlay provided but no suitable label column found; skipping labels.")
+                gdf.boundary.plot(ax=ax, linewidth=vector_linewidth, alpha=vector_alpha)
+
+            if overlay_labels and not gdf.empty:
+                label_col = _pick_label_column(gdf, overlay_label_field)
+                if label_col:
+                    for _, row in gdf.iterrows():
+                        geom = row.geometry
+                        label = row[label_col]
+                        if geom is None or geom.is_empty or label is None or (
+                            isinstance(label, (float, np.floating)) and np.isnan(label)
+                        ):
+                            continue
+                        centroid = geom.centroid
+                        ax.text(
+                            centroid.x,
+                            centroid.y,
+                            str(label),
+                            ha="center",
+                            va="center",
+                            fontsize=overlay_label_size,
+                            color="black",
+                            alpha=vector_alpha,
+                            path_effects=[pe.withStroke(linewidth=1.5, foreground="white")],
+                        )
+                else:
+                    LOG.info("Overlay provided but no suitable label column found; skipping labels.")
         except Exception as e:
             LOG.error("Vector overlay failed (%s). Continuing without vectors.", e)
 
@@ -463,6 +490,8 @@ def main() -> int:
 
     ap.add_argument("--overlay", "--overlay-vector", dest="overlay", default=None,
                     help="GeoJSON/Shapefile path to overlay (optional).")
+    ap.add_argument("--overlay-notext", dest="overlay_notext", default=None,
+                    help="GeoJSON/Shapefile path to overlay without labels.")
     ap.add_argument("--vector-linewidth", type=float, default=1.0)
     ap.add_argument("--vector-alpha", type=float, default=0.9)
     ap.add_argument("--overlay-label-field", default=None,
@@ -584,6 +613,13 @@ def main() -> int:
     if args.log_scale and not log_scale:
         LOG.warning("Log scale is only supported for flood depth variables; disabling log scale.")
 
+    overlay_vectors = args.overlay_notext or args.overlay
+    overlay_labels = args.overlay_notext is None
+    if args.overlay_notext and args.overlay:
+        LOG.warning("Both --overlay and --overlay-notext provided; using --overlay-notext and disabling labels.")
+    if args.overlay_notext and args.overlay_label_field:
+        LOG.info("--overlay-notext set; ignoring --overlay-label-field.")
+
     for ti in indices:
         if time_dim:
             if ti < 0 or ti >= time_size:
@@ -644,11 +680,12 @@ def main() -> int:
             hillshade_azdeg=args.azdeg,
             hillshade_altdeg=args.altdeg,
             hillshade_vert_exag=args.vert_exag,
-            overlay_vectors=args.overlay,
+            overlay_vectors=overlay_vectors,
             vector_linewidth=args.vector_linewidth,
             vector_alpha=args.vector_alpha,
             overlay_label_field=args.overlay_label_field,
             overlay_label_size=args.overlay_label_size,
+            overlay_labels=overlay_labels,
             dpi=args.dpi,
         )
 

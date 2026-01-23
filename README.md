@@ -210,7 +210,7 @@ python utils/output_plot.py \
   --log-level INFO
 ```
 
-The script can also batch-render every time step by omitting `--time-index`, optionally regrid to align DEM/flood grids (`--regrid dem_to_flood` or `--regrid flood_to_dem`), and overlay administrative boundaries when `geopandas` is installed (e.g., `--overlay muni.geojson --overlay-label-field NAME`). Use `--plot-var` to choose outputs like `risk_index` or `inundation_mask`. Non-positive `flood_depth` values are always transparent in the plot.
+The script can also batch-render every time step by omitting `--time-index`, optionally regrid to align DEM/flood grids (`--regrid dem_to_flood` or `--regrid flood_to_dem`), and overlay administrative boundaries when `geopandas` is installed (e.g., `--overlay muni.geojson --overlay-label-field NAME`). Use `--overlay-notext` for the same overlay without labels, and note that overlays are clipped to the plotting domain bounds. Use `--plot-var` to choose outputs like `risk_index` or `inundation_mask`. Non-positive `flood_depth` values are always transparent in the plot.
 
 ## Use case
 ### Italy, December 23rd 2025 intense rain event

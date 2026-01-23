@@ -69,6 +69,16 @@ python utils/output_to_geo.py \
   --geojson-out features_with_risk.geojson
 ```
 
+### Basic with a specific time step (time index = 6)
+
+```bash
+python utils/output_to_geo.py \
+  --nc output_flood_depth.nc \
+  --geojson-in features.geojson \
+  --geojson-out features_with_risk_t6.geojson \
+  --time-index 6
+```
+
 ### GeoJSON in a projected CRS (example: UTM 33N EPSG:32633)
 
 ```bash
@@ -99,6 +109,62 @@ python utils/output_to_geo.py \
   --geojson-out sensors_with_risk.geojson \
   --point-buffer-m 50 \
   --depth-threshold-m 0.10
+```
+
+### Enforce risk class thresholds (custom R1..R4 breakpoints)
+
+Use three thresholds `t1,t2,t3` so values map as:
+`<=t1 → R1`, `<=t2 → R2`, `<=t3 → R3`, else `R4`.
+
+```bash
+python utils/output_to_geo.py \
+  --nc output_flood_depth.nc \
+  --geojson-in assets.geojson \
+  --geojson-out assets_with_risk.geojson \
+  --risk-class-thresholds 0.2,0.4,0.7 \
+  --risk-class-mode mean
+```
+
+### Choose fast rasterized zonal stats (requires rasterio)
+
+This mode is much faster on regular lon/lat grids. It approximates areas using `cos(lat)` weighting.
+
+```bash
+python utils/output_to_geo.py \
+  --nc output_flood_depth.nc \
+  --geojson-in assets.geojson \
+  --geojson-out assets_with_risk.geojson \
+  --stats-mode fast \
+  --area-weighting coslat \
+  --all-touched
+```
+
+### Force exact (slow) geometry intersections
+
+Use this for validation or if your grid is not regular.
+
+```bash
+python utils/output_to_geo.py \
+  --nc output_flood_depth.nc \
+  --geojson-in assets.geojson \
+  --geojson-out assets_with_risk.geojson \
+  --stats-mode exact
+```
+
+### Rename output property keys
+
+```bash
+python utils/output_to_geo.py \
+  --nc output_flood_depth.nc \
+  --geojson-in assets.geojson \
+  --geojson-out assets_with_custom_props.geojson \
+  --prop-flood-mean flood_mean_m \
+  --prop-flood-max flood_max_m \
+  --prop-risk-mean risk_mean \
+  --prop-risk-max risk_max \
+  --prop-flood-pct flood_pct_gt_020m \
+  --prop-mode lperfect_mode \
+  --prop-risk-class risk_class
 ```
 
 ### Parallel (MPI + threads)
@@ -137,6 +203,23 @@ This launches 4 ranks (distributed) and 8 threads **per rank** (shared memory). 
 ### Threshold metric
 - `--depth-threshold-m METERS` (default `None`):
   - If set, adds `flood_depth_pct_gt_thr`
+
+### Zonal statistics performance
+- `--stats-mode {auto,fast,exact}` (default `auto`):
+  - `fast`: rasterize geometry on a regular lon/lat grid (requires `rasterio`)
+  - `exact`: polygon-cell intersections (slow but precise)
+  - `auto`: try fast mode, fall back to exact if rasterization cannot be used
+- `--all-touched` (flag):
+  - Fast mode only. Includes every cell touched by a boundary (faster, slightly less conservative).
+- `--area-weighting {coslat,none}` (default `coslat`):
+  - Fast mode only. `coslat` approximates cell areas by latitude; `none` is unweighted.
+
+### Risk classification
+- `--prop-risk-class NAME` (default `risk_index_class`)
+- `--risk-class-mode {max,mean}` (default `max`):
+  - Chooses which aggregated risk value gets classified.
+- `--risk-class-thresholds t1,t2,t3` (optional):
+  - Override thresholds for R1..R4 mapping.
 
 ### Output property names (advanced)
 You can rename output property keys:

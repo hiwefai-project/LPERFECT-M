@@ -14,7 +14,7 @@ Additionally, it can compute **percent area above a flood depth threshold**.
 ## What it reads
 
 ### NetCDF (LPERFECT output)
-Ensure `output.variables` includes `flood_depth` and `risk_index`, since this tool expects those fields.
+Choose which NetCDF variables to use with `--variables` (default: `flood_depth,risk_index`).
 Expected variables/dimensions (from the CDL):
 - Dimensions: `time`, `latitude`, `longitude`
 - Variables:
@@ -22,7 +22,10 @@ Expected variables/dimensions (from the CDL):
   - `longitude(longitude)` (degrees_east)
   - `flood_depth(time, latitude, longitude)` (meters)
   - `risk_index(time, latitude, longitude)` (unitless)
-  - Optional `_FillValue` attribute on `flood_depth` and `risk_index`
+  - `inundation_mask(time, latitude, longitude)` (0/1)
+  - `flood_depth_max(latitude, longitude)` (meters)
+  - `inundation_mask_max(latitude, longitude)` (0/1)
+  - Optional `_FillValue` attributes where applicable
 
 ### GeoJSON input
 - Must be a `FeatureCollection`
@@ -34,12 +37,14 @@ Expected variables/dimensions (from the CDL):
 
 A GeoJSON `FeatureCollection` where each feature gets new properties (names configurable via CLI):
 
-Default added properties:
+Default added properties (when `--variables` includes the corresponding fields):
 - `flood_depth_mean` (float, meters) — area-weighted mean flood depth
 - `flood_depth_max`  (float, meters) — maximum flood depth
 - `risk_index_mean`  (float, unitless) — area-weighted mean risk index
 - `risk_index_max`   (float, unitless) — maximum risk index
 - `flood_depth_pct_gt_thr` (float, %) — percent of **valid intersected area** where flood depth is above threshold (if enabled)
+- `risk_index_class` (string) — optional R1..R4 class when `risk_index` is selected
+- `<var>_mean` / `<var>_max` for additional selections such as `inundation_mask`, `flood_depth_max`, `inundation_mask_max`
 - `risk_mode` (string) — indicates how the value was computed: `point`, `area`, `line_centroid`, `centroid`, ...
 
 Notes:
@@ -77,6 +82,16 @@ python utils/output_to_geo.py \
   --geojson-in features.geojson \
   --geojson-out features_with_risk_t6.geojson \
   --time-index 6
+```
+
+### Use inundation masks instead of risk index
+
+```bash
+python utils/output_to_geo.py \
+  --nc output_flood_depth.nc \
+  --geojson-in assets.geojson \
+  --geojson-out assets_with_inundation.geojson \
+  --variables flood_depth,inundation_mask
 ```
 
 ### GeoJSON in a projected CRS (example: UTM 33N EPSG:32633)
@@ -188,6 +203,7 @@ This launches 4 ranks (distributed) and 8 threads **per rank** (shared memory). 
 - `--geojson-in PATH` **(required)**: input GeoJSON FeatureCollection
 - `--geojson-out PATH` **(required)**: output GeoJSON
 - `--time-index N` (default `0`): index of `time` to use
+- `--variables LIST` (default `flood_depth,risk_index`): comma-separated list of NetCDF variables to include (`all` for every supported variable)
 
 ### CRS
 - `--geojson-epsg EPSG` (default `4326`): EPSG of input GeoJSON coordinates

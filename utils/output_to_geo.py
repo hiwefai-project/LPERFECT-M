@@ -7,6 +7,7 @@ LPERFECT NetCDF (cdl/output.cdl) -> GeoJSON enrichment:
 - risk_index_mean, risk_index_max
 - flood_depth_pct_gt_thr  (% area where flood_depth > threshold)
 - risk_index_class        (R1..R4, PAI/DPC-style classes)
+- optional per-variable mean/max for inundation_mask and *_max fields
 
 Italian scheme used for classes:
 R1 basso, R2 medio/moderato, R3 elevato, R4 molto elevato. :contentReference[oaicite:1]{index=1}
@@ -51,6 +52,18 @@ LON_NAME = "longitude"
 TIME_NAME = "time"
 FLOOD_NAME = "flood_depth"
 RISK_NAME = "risk_index"
+INUNDATION_NAME = "inundation_mask"
+FLOOD_MAX_NAME = "flood_depth_max"
+INUNDATION_MAX_NAME = "inundation_mask_max"
+
+VARIABLES_WITH_TIME = {FLOOD_NAME, RISK_NAME, INUNDATION_NAME}
+ALLOWED_VARIABLES = {
+    FLOOD_NAME,
+    RISK_NAME,
+    INUNDATION_NAME,
+    FLOOD_MAX_NAME,
+    INUNDATION_MAX_NAME,
+}
 
 
 def _try_init_mpi(disable_mpi: bool):
@@ -89,6 +102,47 @@ def _as_float(v: Any) -> float:
         return float(np.asarray(v).item())
     except Exception:
         return float("nan")
+
+
+def _parse_variables(raw: str) -> List[str]:
+    if raw is None:
+        return [FLOOD_NAME, RISK_NAME]
+
+    raw = raw.strip()
+    if raw.lower() == "all":
+        return sorted(ALLOWED_VARIABLES)
+
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    if not parts:
+        raise ValueError("--variables must include at least one variable name.")
+
+    unknown = [p for p in parts if p not in ALLOWED_VARIABLES]
+    if unknown:
+        raise ValueError(f"Unsupported variables in --variables: {', '.join(unknown)}")
+
+    seen = set()
+    ordered = []
+    for name in parts:
+        if name in seen:
+            continue
+        ordered.append(name)
+        seen.add(name)
+    return ordered
+
+
+def _prop_names_for_variable(var_name: str, args: argparse.Namespace) -> Tuple[str, str]:
+    if var_name == FLOOD_NAME:
+        return args.prop_flood_mean, args.prop_flood_max
+    if var_name == RISK_NAME:
+        return args.prop_risk_mean, args.prop_risk_max
+    return f"{var_name}_mean", f"{var_name}_max"
+
+
+def _sample_cell_value(da: xr.DataArray, ilat: int, ilon: int, fill: Any) -> Optional[float]:
+    raw_value = _as_float(da.isel({LAT_NAME: ilat, LON_NAME: ilon}).values)
+    if _is_fill(raw_value, fill) or not _is_finite(raw_value):
+        return None
+    return float(raw_value)
 
 
 def _ensure_1d(da: xr.DataArray, name: str) -> np.ndarray:
@@ -284,8 +338,8 @@ def compute_area_stats_fast(
     *,
     transform: "Affine",
     out_shape: Tuple[int, int],
-    flood_np: np.ndarray,
-    risk_np: np.ndarray,
+    flood_np: Optional[np.ndarray],
+    risk_np: Optional[np.ndarray],
     fill_flood: Any,
     fill_risk: Any,
     lat_centers_for_rows: np.ndarray,
@@ -304,7 +358,7 @@ def compute_area_stats_fast(
     """
     if rio_features is None:
         raise RuntimeError("rasterio is not available")
-    if geom_4326.is_empty:
+    if geom_4326.is_empty or (flood_np is None and risk_np is None):
         return None, None, None, None, None
 
     mask = rio_features.rasterize(
@@ -322,37 +376,74 @@ def compute_area_stats_fast(
     flood = flood_np
     risk = risk_np
 
-    f_valid = np.isfinite(flood)
-    r_valid = np.isfinite(risk)
-    if fill_flood is not None and _is_finite(fill_flood):
-        f_valid &= (flood != float(fill_flood))
-    if fill_risk is not None and _is_finite(fill_risk):
-        r_valid &= (risk != float(fill_risk))
-
-    both_valid = mask & f_valid & r_valid
-
     fmean = rmean = fmax = rmax = None
-    if np.any(both_valid):
-        if area_weighting == "coslat":
-            w_row = np.cos(np.deg2rad(lat_centers_for_rows)).astype(np.float64)
-            w = w_row[:, None]
-            w_sel = w[both_valid]
-            ws = float(np.sum(w_sel))
-            if ws > 0.0:
-                fmean = float(np.sum(flood[both_valid].astype(np.float64) * w_sel) / ws)
-                rmean = float(np.sum(risk[both_valid].astype(np.float64) * w_sel) / ws)
+    fpct = None
+
+    f_valid = None
+    r_valid = None
+
+    if flood is not None:
+        f_valid = np.isfinite(flood)
+        if fill_flood is not None and _is_finite(fill_flood):
+            f_valid &= (flood != float(fill_flood))
+    if risk is not None:
+        r_valid = np.isfinite(risk)
+        if fill_risk is not None and _is_finite(fill_risk):
+            r_valid &= (risk != float(fill_risk))
+
+    if flood is not None and risk is not None:
+        both_valid = mask & f_valid & r_valid
+        if np.any(both_valid):
+            if area_weighting == "coslat":
+                w_row = np.cos(np.deg2rad(lat_centers_for_rows)).astype(np.float64)
+                w = w_row[:, None]
+                w_sel = w[both_valid]
+                ws = float(np.sum(w_sel))
+                if ws > 0.0:
+                    fmean = float(np.sum(flood[both_valid].astype(np.float64) * w_sel) / ws)
+                    rmean = float(np.sum(risk[both_valid].astype(np.float64) * w_sel) / ws)
+                else:
+                    fmean = float(np.nanmean(flood[both_valid]))
+                    rmean = float(np.nanmean(risk[both_valid]))
             else:
                 fmean = float(np.nanmean(flood[both_valid]))
                 rmean = float(np.nanmean(risk[both_valid]))
-        else:
-            fmean = float(np.nanmean(flood[both_valid]))
-            rmean = float(np.nanmean(risk[both_valid]))
 
-        fmax = float(np.nanmax(flood[both_valid]))
-        rmax = float(np.nanmax(risk[both_valid]))
+            fmax = float(np.nanmax(flood[both_valid]))
+            rmax = float(np.nanmax(risk[both_valid]))
+    else:
+        if flood is not None:
+            fmask = mask & f_valid
+            if np.any(fmask):
+                if area_weighting == "coslat":
+                    w_row = np.cos(np.deg2rad(lat_centers_for_rows)).astype(np.float64)
+                    w = w_row[:, None]
+                    w_sel = w[fmask]
+                    ws = float(np.sum(w_sel))
+                    if ws > 0.0:
+                        fmean = float(np.sum(flood[fmask].astype(np.float64) * w_sel) / ws)
+                    else:
+                        fmean = float(np.nanmean(flood[fmask]))
+                else:
+                    fmean = float(np.nanmean(flood[fmask]))
+                fmax = float(np.nanmax(flood[fmask]))
+        if risk is not None:
+            rmask = mask & r_valid
+            if np.any(rmask):
+                if area_weighting == "coslat":
+                    w_row = np.cos(np.deg2rad(lat_centers_for_rows)).astype(np.float64)
+                    w = w_row[:, None]
+                    w_sel = w[rmask]
+                    ws = float(np.sum(w_sel))
+                    if ws > 0.0:
+                        rmean = float(np.sum(risk[rmask].astype(np.float64) * w_sel) / ws)
+                    else:
+                        rmean = float(np.nanmean(risk[rmask]))
+                else:
+                    rmean = float(np.nanmean(risk[rmask]))
+                rmax = float(np.nanmax(risk[rmask]))
 
-    fpct = None
-    if depth_thr_m is not None:
+    if depth_thr_m is not None and flood is not None:
         d_valid = mask & f_valid
         if np.any(d_valid):
             if area_weighting == "coslat":
@@ -371,12 +462,65 @@ def compute_area_stats_fast(
     return fmean, fmax, rmean, rmax, fpct
 
 
+def compute_area_stats_fast_single(
+    geom_4326,
+    *,
+    transform: "Affine",
+    out_shape: Tuple[int, int],
+    data_np: np.ndarray,
+    fill_value: Any,
+    lat_centers_for_rows: np.ndarray,
+    all_touched: bool = False,
+    area_weighting: str = "coslat",
+) -> Tuple[Optional[float], Optional[float]]:
+    """Fast rasterized stats for a single variable (mean/max)."""
+    if rio_features is None:
+        raise RuntimeError("rasterio is not available")
+    if geom_4326.is_empty:
+        return None, None
+
+    mask = rio_features.rasterize(
+        [(geom_4326, 1)],
+        out_shape=out_shape,
+        transform=transform,
+        fill=0,
+        dtype="uint8",
+        all_touched=bool(all_touched),
+    ).astype(bool)
+
+    if not np.any(mask):
+        return None, None
+
+    valid = np.isfinite(data_np)
+    if fill_value is not None and _is_finite(fill_value):
+        valid &= (data_np != float(fill_value))
+
+    valid_mask = mask & valid
+    if not np.any(valid_mask):
+        return None, None
+
+    if area_weighting == "coslat":
+        w_row = np.cos(np.deg2rad(lat_centers_for_rows)).astype(np.float64)
+        w = w_row[:, None]
+        w_sel = w[valid_mask]
+        ws = float(np.sum(w_sel))
+        if ws > 0.0:
+            mean_val = float(np.sum(data_np[valid_mask].astype(np.float64) * w_sel) / ws)
+        else:
+            mean_val = float(np.nanmean(data_np[valid_mask]))
+    else:
+        mean_val = float(np.nanmean(data_np[valid_mask]))
+
+    max_val = float(np.nanmax(data_np[valid_mask]))
+    return mean_val, max_val
+
+
 def compute_area_stats_exact(
     geom_4326,
     lat_edges: np.ndarray,
     lon_edges: np.ndarray,
-    flood2d: xr.DataArray,
-    risk2d: xr.DataArray,
+    flood2d: Optional[xr.DataArray],
+    risk2d: Optional[xr.DataArray],
     fill_flood: Any,
     fill_risk: Any,
     to_area_from4326: Transformer,
@@ -423,18 +567,34 @@ def compute_area_stats_exact(
             if a <= 0:
                 continue
 
-            d = _as_float(flood2d.isel({LAT_NAME: ilat_i, LON_NAME: ilon_i}).values)
-            r = _as_float(risk2d.isel({LAT_NAME: ilat_i, LON_NAME: ilon_i}).values)
+            d_valid = False
+            r_valid = False
+            d = None
+            r = None
 
-            d_valid = _is_finite(d) and not _is_fill(d, fill_flood)
-            r_valid = _is_finite(r) and not _is_fill(r, fill_risk)
+            if flood2d is not None:
+                d = _as_float(flood2d.isel({LAT_NAME: ilat_i, LON_NAME: ilon_i}).values)
+                d_valid = _is_finite(d) and not _is_fill(d, fill_flood)
+            if risk2d is not None:
+                r = _as_float(risk2d.isel({LAT_NAME: ilat_i, LON_NAME: ilon_i}).values)
+                r_valid = _is_finite(r) and not _is_fill(r, fill_risk)
 
-            if d_valid and r_valid:
-                sum_area += a
-                flood_sum += d * a
-                risk_sum += r * a
-                flood_max = d if flood_max is None else max(flood_max, d)
-                risk_max = r if risk_max is None else max(risk_max, r)
+            if flood2d is not None and risk2d is not None:
+                if d_valid and r_valid:
+                    sum_area += a
+                    flood_sum += d * a
+                    risk_sum += r * a
+                    flood_max = d if flood_max is None else max(flood_max, d)
+                    risk_max = r if risk_max is None else max(risk_max, r)
+            else:
+                if d_valid:
+                    sum_area += a
+                    flood_sum += d * a
+                    flood_max = d if flood_max is None else max(flood_max, d)
+                if r_valid:
+                    sum_area += a
+                    risk_sum += r * a
+                    risk_max = r if risk_max is None else max(risk_max, r)
 
             if depth_thr_m is not None and d_valid:
                 valid_area_depth += a
@@ -445,14 +605,70 @@ def compute_area_stats_exact(
         flood_mean = None
         risk_mean = None
     else:
-        flood_mean = flood_sum / sum_area
-        risk_mean = risk_sum / sum_area
+        flood_mean = flood_sum / sum_area if flood2d is not None else None
+        risk_mean = risk_sum / sum_area if risk2d is not None else None
 
     flood_pct = None
     if depth_thr_m is not None and valid_area_depth > 0:
         flood_pct = 100.0 * (gt_area_depth / valid_area_depth)
 
     return flood_mean, flood_max, risk_mean, risk_max, flood_pct
+
+
+def compute_area_stats_exact_single(
+    geom_4326,
+    lat_edges: np.ndarray,
+    lon_edges: np.ndarray,
+    data2d: xr.DataArray,
+    fill_value: Any,
+    to_area_from4326: Transformer,
+) -> Tuple[Optional[float], Optional[float]]:
+    """Exact area-weighted stats for a single variable (mean/max)."""
+    geom_area = shp_transform(lambda x, y, z=None: to_area_from4326.transform(x, y), geom_4326)
+    if geom_area.is_empty:
+        return None, None
+
+    geom_area_p = prep(geom_area)
+
+    minx, miny, maxx, maxy = geom_4326.bounds
+    ilon0, ilon1 = bbox_to_index_range(lon_edges, minx, maxx)
+    ilat0, ilat1 = bbox_to_index_range(lat_edges, miny, maxy)
+    if ilon1 < ilon0 or ilat1 < ilat0:
+        return None, None
+
+    sum_area = 0.0
+    data_sum = 0.0
+    data_max: Optional[float] = None
+
+    for ilat_i in range(ilat0, ilat1 + 1):
+        for ilon_i in range(ilon0, ilon1 + 1):
+            cell_ll = cell_polygon_lonlat(lon_edges, lat_edges, ilon_i, ilat_i)
+            cell_area_poly = shp_transform(lambda x, y, z=None: to_area_from4326.transform(x, y), cell_ll)
+
+            if cell_area_poly.is_empty or not geom_area_p.intersects(cell_area_poly):
+                continue
+
+            inter = geom_area.intersection(cell_area_poly)
+            if inter.is_empty:
+                continue
+
+            a = float(inter.area)
+            if a <= 0:
+                continue
+
+            v = _as_float(data2d.isel({LAT_NAME: ilat_i, LON_NAME: ilon_i}).values)
+            v_valid = _is_finite(v) and not _is_fill(v, fill_value)
+            if not v_valid:
+                continue
+
+            sum_area += a
+            data_sum += v * a
+            data_max = v if data_max is None else max(data_max, v)
+
+    if sum_area <= 0:
+        return None, None
+
+    return data_sum / sum_area, data_max
 
 
 
@@ -465,10 +681,11 @@ def _process_feature(
     lon: np.ndarray,
     lat_edges: np.ndarray,
     lon_edges: np.ndarray,
-    flood2d: xr.DataArray,
-    risk2d: xr.DataArray,
+    flood2d: Optional[xr.DataArray],
+    risk2d: Optional[xr.DataArray],
     fill_flood: Any,
     fill_risk: Any,
+    extra_vars: List[Dict[str, Any]],
     to4326: Transformer,
     to_area: Transformer,
     back_to_4326: Transformer,
@@ -512,26 +729,24 @@ def _process_feature(
         lonp, latp = float(geom_4326.x), float(geom_4326.y)
         ilat, ilon = nearest_ij(lat, lon, lat=latp, lon=lonp)
 
-        d = _as_float(flood2d.isel({LAT_NAME: ilat, LON_NAME: ilon}).values)
-        r = _as_float(risk2d.isel({LAT_NAME: ilat, LON_NAME: ilon}).values)
+        if flood2d is not None:
+            d_out = _sample_cell_value(flood2d, ilat, ilon, fill_flood)
+            props[args.prop_flood_mean] = d_out
+            props[args.prop_flood_max] = d_out
 
-        if _is_fill(d, fill_flood):
-            d = float("nan")
-        if _is_fill(r, fill_risk):
-            r = float("nan")
+            if args.depth_threshold_m is not None:
+                props[args.prop_flood_pct] = None
 
-        d_out = None if not _is_finite(d) else d
-        r_out = None if not _is_finite(r) else r
+        if risk2d is not None:
+            r_out = _sample_cell_value(risk2d, ilat, ilon, fill_risk)
+            props[args.prop_risk_mean] = r_out
+            props[args.prop_risk_max] = r_out
+            props[args.prop_risk_class] = classify_risk_r1_r4(r_out, risk_thr_tuple)
 
-        props[args.prop_flood_mean] = d_out
-        props[args.prop_flood_max] = d_out
-        props[args.prop_risk_mean] = r_out
-        props[args.prop_risk_max] = r_out
-
-        if args.depth_threshold_m is not None:
-            props[args.prop_flood_pct] = None
-
-        props[args.prop_risk_class] = classify_risk_r1_r4(r_out, risk_thr_tuple)
+        for var_info in extra_vars:
+            v_out = _sample_cell_value(var_info["data2d"], ilat, ilon, var_info["fill_value"])
+            props[var_info["prop_mean"]] = v_out
+            props[var_info["prop_max"]] = v_out
         props[args.prop_mode] = "point"
         if args.add_grid_idx:
             props["_lperfect_ilat"] = ilat
@@ -553,31 +768,30 @@ def _process_feature(
             c = geom_4326.centroid
             lonp, latp = float(c.x), float(c.y)
             ilat, ilon = nearest_ij(lat, lon, lat=latp, lon=lonp)
-            d = _as_float(flood2d.isel({LAT_NAME: ilat, LON_NAME: ilon}).values)
-            r = _as_float(risk2d.isel({LAT_NAME: ilat, LON_NAME: ilon}).values)
-            if _is_fill(d, fill_flood):
-                d = float("nan")
-            if _is_fill(r, fill_risk):
-                r = float("nan")
+            if flood2d is not None:
+                d_out = _sample_cell_value(flood2d, ilat, ilon, fill_flood)
+                props[args.prop_flood_mean] = d_out
+                props[args.prop_flood_max] = d_out
+                if args.depth_threshold_m is not None:
+                    props[args.prop_flood_pct] = None
 
-            d_out = None if not _is_finite(d) else d
-            r_out = None if not _is_finite(r) else r
+            if risk2d is not None:
+                r_out = _sample_cell_value(risk2d, ilat, ilon, fill_risk)
+                props[args.prop_risk_mean] = r_out
+                props[args.prop_risk_max] = r_out
+                props[args.prop_risk_class] = classify_risk_r1_r4(r_out, risk_thr_tuple)
 
-            props[args.prop_flood_mean] = d_out
-            props[args.prop_flood_max] = d_out
-            props[args.prop_risk_mean] = r_out
-            props[args.prop_risk_max] = r_out
-            if args.depth_threshold_m is not None:
-                props[args.prop_flood_pct] = None
-
-            props[args.prop_risk_class] = classify_risk_r1_r4(r_out, risk_thr_tuple)
+            for var_info in extra_vars:
+                v_out = _sample_cell_value(var_info["data2d"], ilat, ilon, var_info["fill_value"])
+                props[var_info["prop_mean"]] = v_out
+                props[var_info["prop_max"]] = v_out
             props[args.prop_mode] = "line_centroid"
             return {"idx": idx, "feature": feature, "updated": True, "skipped": False}
 
     # ----- AREA: Polygon/MultiPolygon (and buffered point/line) -----
     if isinstance(geom_4326, (Polygon, MultiPolygon)):
         fmean = fmax = rmean = rmax = fpct = None
-        use_fast = (stats_mode in ("auto", "fast")) and (raster_transform is not None) and (raster_out_shape is not None) and (flood_np is not None) and (risk_np is not None) and (lat_rows is not None)
+        use_fast = (stats_mode in ("auto", "fast")) and (raster_transform is not None) and (raster_out_shape is not None) and (lat_rows is not None)
         if use_fast:
             try:
                 fmean, fmax, rmean, rmax, fpct = compute_area_stats_fast(
@@ -622,17 +836,58 @@ def _process_feature(
                 depth_thr_m=args.depth_threshold_m,
             )
 
-        props[args.prop_flood_mean] = fmean
-        props[args.prop_flood_max] = fmax
-        props[args.prop_risk_mean] = rmean
-        props[args.prop_risk_max] = rmax
+        if flood2d is not None:
+            props[args.prop_flood_mean] = fmean
+            props[args.prop_flood_max] = fmax
+            if args.depth_threshold_m is not None:
+                props[args.prop_flood_pct] = fpct
+                props.setdefault("_depth_threshold_m", args.depth_threshold_m)
 
-        if args.depth_threshold_m is not None:
-            props[args.prop_flood_pct] = fpct
-            props.setdefault("_depth_threshold_m", args.depth_threshold_m)
+        if risk2d is not None:
+            props[args.prop_risk_mean] = rmean
+            props[args.prop_risk_max] = rmax
+            base_for_class = rmax if args.risk_class_mode == "max" else rmean
+            props[args.prop_risk_class] = classify_risk_r1_r4(base_for_class, risk_thr_tuple)
 
-        base_for_class = rmax if args.risk_class_mode == "max" else rmean
-        props[args.prop_risk_class] = classify_risk_r1_r4(base_for_class, risk_thr_tuple)
+        for var_info in extra_vars:
+            vmean = vmax = None
+            use_fast_var = use_fast and (var_info["data_np"] is not None)
+            if use_fast_var:
+                try:
+                    vmean, vmax = compute_area_stats_fast_single(
+                        geom_4326,
+                        transform=raster_transform,
+                        out_shape=raster_out_shape,
+                        data_np=var_info["data_np"],
+                        fill_value=var_info["fill_value"],
+                        lat_centers_for_rows=lat_rows,
+                        all_touched=args.all_touched,
+                        area_weighting=args.area_weighting,
+                    )
+                except Exception as exc:
+                    LOG.debug("Fast zonal stats failed for %s on feature %s: %s; falling back to exact.", var_info["name"], idx, exc)
+                    if stats_mode == "fast":
+                        raise
+                    vmean, vmax = compute_area_stats_exact_single(
+                        geom_4326=geom_4326,
+                        lat_edges=lat_edges,
+                        lon_edges=lon_edges,
+                        data2d=var_info["data2d"],
+                        fill_value=var_info["fill_value"],
+                        to_area_from4326=to_area,
+                    )
+            else:
+                vmean, vmax = compute_area_stats_exact_single(
+                    geom_4326=geom_4326,
+                    lat_edges=lat_edges,
+                    lon_edges=lon_edges,
+                    data2d=var_info["data2d"],
+                    fill_value=var_info["fill_value"],
+                    to_area_from4326=to_area,
+                )
+
+            props[var_info["prop_mean"]] = vmean
+            props[var_info["prop_max"]] = vmax
 
         props[args.prop_mode] = "area"
         return {"idx": idx, "feature": feature, "updated": True, "skipped": False}
@@ -641,36 +896,46 @@ def _process_feature(
     c = geom_4326.centroid
     lonp, latp = float(c.x), float(c.y)
     ilat, ilon = nearest_ij(lat, lon, lat=latp, lon=lonp)
-    d = _as_float(flood2d.isel({LAT_NAME: ilat, LON_NAME: ilon}).values)
-    r = _as_float(risk2d.isel({LAT_NAME: ilat, LON_NAME: ilon}).values)
-    if _is_fill(d, fill_flood):
-        d = float("nan")
-    if _is_fill(r, fill_risk):
-        r = float("nan")
+    if flood2d is not None:
+        d_out = _sample_cell_value(flood2d, ilat, ilon, fill_flood)
+        props[args.prop_flood_mean] = d_out
+        props[args.prop_flood_max] = d_out
+        if args.depth_threshold_m is not None:
+            props[args.prop_flood_pct] = None
 
-    d_out = None if not _is_finite(d) else d
-    r_out = None if not _is_finite(r) else r
+    if risk2d is not None:
+        r_out = _sample_cell_value(risk2d, ilat, ilon, fill_risk)
+        props[args.prop_risk_mean] = r_out
+        props[args.prop_risk_max] = r_out
+        props[args.prop_risk_class] = classify_risk_r1_r4(r_out, risk_thr_tuple)
 
-    props[args.prop_flood_mean] = d_out
-    props[args.prop_flood_max] = d_out
-    props[args.prop_risk_mean] = r_out
-    props[args.prop_risk_max] = r_out
-    if args.depth_threshold_m is not None:
-        props[args.prop_flood_pct] = None
-
-    props[args.prop_risk_class] = classify_risk_r1_r4(r_out, risk_thr_tuple)
+    for var_info in extra_vars:
+        v_out = _sample_cell_value(var_info["data2d"], ilat, ilon, var_info["fill_value"])
+        props[var_info["prop_mean"]] = v_out
+        props[var_info["prop_max"]] = v_out
     props[args.prop_mode] = "centroid"
     return {"idx": idx, "feature": feature, "updated": True, "skipped": False}
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Enrich GeoJSON with LPERFECT flood depth/risk (mean+max + % area above depth threshold + risk class)."
+        description=(
+            "Enrich GeoJSON with LPERFECT outputs (mean+max, optional flood threshold %, and risk class). "
+            "Use --variables to select which NetCDF variables are included."
+        )
     )
     ap.add_argument("--nc", required=True)
     ap.add_argument("--geojson-in", required=True)
     ap.add_argument("--geojson-out", required=True)
     ap.add_argument("--time-index", type=int, default=0)
+    ap.add_argument(
+        "--variables",
+        default=f"{FLOOD_NAME},{RISK_NAME}",
+        help=(
+            "Comma-separated variables from the NetCDF to include in the GeoJSON. "
+            f"Supported: {', '.join(sorted(ALLOWED_VARIABLES))}. Use 'all' for every variable."
+        ),
+    )
 
     ap.add_argument("--geojson-epsg", type=int, default=4326)
     ap.add_argument("--area-epsg", type=int, default=6933)
@@ -735,6 +1000,12 @@ def main() -> int:
             raise ValueError("--risk-class-thresholds must have exactly 3 values: t1,t2,t3")
         risk_thr_tuple = (float(parts[0]), float(parts[1]), float(parts[2]))
 
+    selected_variables = _parse_variables(args.variables)
+    selected_set = set(selected_variables)
+
+    if args.depth_threshold_m is not None and FLOOD_NAME not in selected_set:
+        LOG.warning("--depth-threshold-m ignored because flood_depth is not selected in --variables.")
+
     to4326 = Transformer.from_crs(f"EPSG:{args.geojson_epsg}", "EPSG:4326", always_xy=True)
     to_area = Transformer.from_crs("EPSG:4326", f"EPSG:{args.area_epsg}", always_xy=True)
     back_to_4326 = Transformer.from_crs(f"EPSG:{args.area_epsg}", "EPSG:4326", always_xy=True)
@@ -747,7 +1018,15 @@ def main() -> int:
 
     LOG.info("Opening NetCDF: %s", args.nc)
     ds = xr.open_dataset(args.nc)
-    for v in (LAT_NAME, LON_NAME, TIME_NAME, FLOOD_NAME, RISK_NAME):
+    for v in (LAT_NAME, LON_NAME):
+        if v not in ds.variables:
+            raise ValueError(f"Missing variable '{v}' in NetCDF. Found: {list(ds.variables)}")
+
+    needs_time = any(name in VARIABLES_WITH_TIME for name in selected_set)
+    if needs_time and TIME_NAME not in ds.variables:
+        raise ValueError(f"Missing variable '{TIME_NAME}' in NetCDF. Found: {list(ds.variables)}")
+
+    for v in selected_variables:
         if v not in ds.variables:
             raise ValueError(f"Missing variable '{v}' in NetCDF. Found: {list(ds.variables)}")
 
@@ -756,19 +1035,52 @@ def main() -> int:
     lat_edges = grid_edges_from_centers(lat)
     lon_edges = grid_edges_from_centers(lon)
 
-    tsize = int(ds.sizes.get(TIME_NAME, 0))
-    if tsize <= 0:
-        raise ValueError("Invalid time dimension size.")
-    if not (0 <= args.time_index < tsize):
-        raise ValueError(f"--time-index out of range (time size={tsize})")
+    if needs_time:
+        tsize = int(ds.sizes.get(TIME_NAME, 0))
+        if tsize <= 0:
+            raise ValueError("Invalid time dimension size.")
+        if not (0 <= args.time_index < tsize):
+            raise ValueError(f"--time-index out of range (time size={tsize})")
 
-    flood2d = ds[FLOOD_NAME].isel({TIME_NAME: args.time_index})
-    risk2d = ds[RISK_NAME].isel({TIME_NAME: args.time_index})
+    def _select_time_slice(name: str) -> xr.DataArray:
+        da = ds[name]
+        if TIME_NAME in da.dims:
+            return da.isel({TIME_NAME: args.time_index})
+        return da
+
+    flood2d = _select_time_slice(FLOOD_NAME) if FLOOD_NAME in selected_set else None
+    risk2d = _select_time_slice(RISK_NAME) if RISK_NAME in selected_set else None
 
     # Materialize 2D slices once (avoid per-cell xarray indexing in hot loops).
     # Keep as float32 for cache efficiency; computations use float64 where needed.
-    flood_np = np.asarray(flood2d.values, dtype=np.float32)
-    risk_np = np.asarray(risk2d.values, dtype=np.float32)
+    flood_np = np.asarray(flood2d.values, dtype=np.float32) if flood2d is not None else None
+    risk_np = np.asarray(risk2d.values, dtype=np.float32) if risk2d is not None else None
+
+    extra_vars: List[Dict[str, Any]] = []
+    for name in selected_variables:
+        if name in (FLOOD_NAME, RISK_NAME):
+            continue
+        data2d = _select_time_slice(name)
+        prop_mean, prop_max = _prop_names_for_variable(name, args)
+        extra_vars.append(
+            {
+                "name": name,
+                "data2d": data2d,
+                "fill_value": ds[name].attrs.get("_FillValue", None),
+                "prop_mean": prop_mean,
+                "prop_max": prop_max,
+                "data_np": None,
+            }
+        )
+
+    def _reference_shape() -> Optional[Tuple[int, int]]:
+        if flood2d is not None:
+            return tuple(flood2d.shape)
+        if risk2d is not None:
+            return tuple(risk2d.shape)
+        if extra_vars:
+            return tuple(extra_vars[0]["data2d"].shape)
+        return None
 
     # ---- Fast zonal stats context (rasterization on the lon/lat grid) ----
     raster_transform = None
@@ -783,14 +1095,23 @@ def main() -> int:
         else:
             try:
                 raster_transform, flip_lat = _build_affine_from_edges(lon_edges, lat_edges)
-                raster_out_shape = (int(flood_np.shape[0]), int(flood_np.shape[1]))
+                ref_shape = _reference_shape()
+                if ref_shape is None:
+                    raise ValueError("No data variables available to establish raster shape.")
+                raster_out_shape = (int(ref_shape[0]), int(ref_shape[1]))
 
                 # Align arrays to raster row order (north->south).
                 if flip_lat:
-                    flood_np = np.flipud(flood_np)
-                    risk_np = np.flipud(risk_np)
+                    if flood_np is not None:
+                        flood_np = np.flipud(flood_np)
+                    if risk_np is not None:
+                        risk_np = np.flipud(risk_np)
+                    for var_info in extra_vars:
+                        var_info["data_np"] = np.flipud(np.asarray(var_info["data2d"].values, dtype=np.float32))
                     lat_rows = np.asarray(lat[::-1], dtype=np.float64)
                 else:
+                    for var_info in extra_vars:
+                        var_info["data_np"] = np.asarray(var_info["data2d"].values, dtype=np.float32)
                     lat_rows = np.asarray(lat, dtype=np.float64)
 
                 LOG.info("Using fast zonal stats (rasterize) on %s x %s grid.", raster_out_shape[0], raster_out_shape[1])
@@ -803,8 +1124,8 @@ def main() -> int:
                 lat_rows = None
 
 
-    fill_flood = ds[FLOOD_NAME].attrs.get("_FillValue", None)
-    fill_risk = ds[RISK_NAME].attrs.get("_FillValue", None)
+    fill_flood = ds[FLOOD_NAME].attrs.get("_FillValue", None) if flood2d is not None else None
+    fill_risk = ds[RISK_NAME].attrs.get("_FillValue", None) if risk2d is not None else None
 
     LOG.info("Loading GeoJSON: %s", args.geojson_in)
     gj = _load_geojson_feature_collection(args.geojson_in) if rank == 0 else None
@@ -836,6 +1157,7 @@ def main() -> int:
                     risk2d=risk2d,
                     fill_flood=fill_flood,
                     fill_risk=fill_risk,
+                    extra_vars=extra_vars,
                     to4326=to4326,
                     to_area=to_area,
                     back_to_4326=back_to_4326,
@@ -866,6 +1188,7 @@ def main() -> int:
                     risk2d=risk2d,
                     fill_flood=fill_flood,
                     fill_risk=fill_risk,
+                    extra_vars=extra_vars,
                     to4326=to4326,
                     to_area=to_area,
                     back_to_4326=back_to_4326,

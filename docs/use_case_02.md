@@ -220,7 +220,7 @@ python utils/output_plot.py \
 ```
 - Optional refinements:
   - Crop the map to a region (e.g., Campania) with `--bbox 13.7 39.9 15.9 41.6`.
-  - Overlay and label boundaries when `geopandas` is installed, e.g. `--overlay data/boundaries/regions.geojson --overlay-label-field name`.
+  - Overlay and label boundaries when `geopandas` is installed, e.g. `--overlay data/boundaries/regions.geojson --overlay-label-field name`, or use `--overlay-notext` to suppress labels. Overlays are clipped to the plotting domain bounds (including any `--bbox` selection).
 
 ## 8. Submit a Slurm batch job (HPC)
 To run the 6-hour-leg workflow on an HPC cluster managed by Slurm, create `run_lperfect_use_case_02.slurm`:

@@ -196,7 +196,7 @@ python utils/output_plot.py \
   --title "LPERFECT flood depth – 2025-12-23 12:00 UTC"
 ```
 - To focus on a specific area, clip to a bounding box; for Regione Campania use `--bbox 13.7 39.9 15.9 41.6` (lon/lat order).
-- Add administrative overlays with labels when `geopandas` is available, e.g. `--overlay data/boundaries/campania.geojson --overlay-label-field name`.
+- Add administrative overlays with labels when `geopandas` is available, e.g. `--overlay data/boundaries/campania.geojson --overlay-label-field name`, or use `--overlay-notext` to suppress labels. Overlays are clipped to the plotting domain bounds (including any `--bbox` selection).
 
 ## 8. Recap
 1. Download `data/domain.nc`.

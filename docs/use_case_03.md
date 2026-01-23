@@ -256,7 +256,7 @@ python utils/output_plot.py \
   --overlay-label-field name \
   --title "LPERFECT flood depth – 2025-09-23 03:00 UTC"
 ```
-The bounding box above frames Regione Campania (lon/lat order), speeding up plotting and zooming into the impacted area. Labels are placed at feature centroids when the overlay column exists; omit `--overlay-label-field` to auto-detect common name fields.
+The bounding box above frames Regione Campania (lon/lat order), speeding up plotting and zooming into the impacted area. Labels are placed at feature centroids when the overlay column exists; omit `--overlay-label-field` to auto-detect common name fields. Use `--overlay-notext` to suppress labels, and note that overlays are clipped to the plotting domain bounds.
 
 ## 10. Submit a Slurm batch job (HPC)
 To run the two-leg workflow on a Slurm cluster, create `run_lperfect_use_case_03.slurm`:

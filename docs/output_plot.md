@@ -156,8 +156,10 @@ python utils/output_plot.py \
   --out outputs/flood_with_bounds.png
 ```
 
+- Use `--overlay-notext data/boundaries.geojson` for the same overlay without labels.
 - If `--overlay-label-field` is omitted, the script tries common name columns (`name`, `nome`, etc.) or the first string-like column.
 - Labels are placed at feature centroids with a light outline for readability.
+- Overlays are clipped to the plotting domain bounds (including any `--bbox` selection).
 
 ---
 
@@ -169,7 +171,7 @@ python utils/output_plot.py \
 - Alignment: `--regrid`
 - Styling: `--threshold`, `--vmin`, `--vmax`, `--vmax-percentile`, `--log-scale`, `--alpha`, `--cmap-flood`
 - Subset: `--bbox min_lon min_lat max_lon max_lat`
-- Overlays: `--overlay`, `--overlay-label-field`, `--overlay-label-size`, `--vector-alpha`, `--vector-linewidth`
+- Overlays: `--overlay`, `--overlay-notext`, `--overlay-label-field`, `--overlay-label-size`, `--vector-alpha`, `--vector-linewidth`
 - Hillshade: `--azdeg`, `--altdeg`, `--vert-exag`
 - Output: `--out`, `--dpi`
 - Debug: `--log-level DEBUG`

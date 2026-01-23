@@ -1,8 +1,8 @@
-# `utils/output_plot.py` — Plot LPERFECT flood depth over DEM hillshade
+# `utils/output_plot.py` — Plot LPERFECT flood outputs over DEM hillshade
 
 This script creates a map figure by combining:
 - **Hillshade** from a DEM (domain NetCDF), and
-- **Flood depth overlay** from LPERFECT output NetCDF.
+- **Flood output overlays** from the LPERFECT NetCDF (depth, risk, or inundation masks).
 
 It includes the “do it all” improvements:
 - FillValue/NaN handling
@@ -10,6 +10,7 @@ It includes the “do it all” improvements:
 - Percentile-based `vmax` for better contrast
 - Optional log scaling
 - Dry pixels are transparent (any `flood_depth <= 0` is masked automatically)
+- Variable-aware defaults for flood depth vs. risk/mask layers
 - Optional regridding (grid alignment)
 - Batch frame generation for all time steps
 - Optional GeoJSON/Shapefile overlay (if installed), with centroid labels
@@ -46,6 +47,26 @@ python utils/output_plot.py --flood data/flood_depth.nc --domain data/domain.nc 
 
 ---
 
+## Choose a variable to plot
+
+Supported variables (use `--plot-var`):
+- `flood_depth`
+- `risk_index`
+- `inundation_mask`
+- `flood_depth_max`
+- `inundation_mask_max`
+
+Example (risk index with the built-in green→yellow→orange→red scale):
+```bash
+python utils/output_plot.py \
+  --flood data/flood_depth.nc \
+  --domain data/domain.nc \
+  --plot-var risk_index \
+  --out outputs/risk_index.png
+```
+
+---
+
 ## Better-looking maps (recommended)
 
 Mask shallow flooding (e.g., 5 cm) and use percentile contrast:
@@ -63,6 +84,7 @@ Log scale for wide depth ranges:
 python utils/output_plot.py \
   --flood data/flood_depth.nc \
   --domain data/domain.nc \
+  --plot-var flood_depth \
   --log-scale \
   --out outputs/flood_log.png
 ```
@@ -143,7 +165,7 @@ python utils/output_plot.py \
 
 - Inputs: `--flood`, `--domain`
 - Time: `--time-index`, `--all-times --out-dir`
-- Variables: `--flood-var`, `--dem-var`, `--lat-name`, `--lon-name`
+- Variables: `--plot-var` (alias `--flood-var`), `--dem-var`, `--lat-name`, `--lon-name`
 - Alignment: `--regrid`
 - Styling: `--threshold`, `--vmin`, `--vmax`, `--vmax-percentile`, `--log-scale`, `--alpha`, `--cmap-flood`
 - Subset: `--bbox min_lon min_lat max_lon max_lat`

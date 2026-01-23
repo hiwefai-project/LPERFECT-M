@@ -2,10 +2,10 @@
 """
 utils/plot_flood_depth.py
 
-A robust, workflow-friendly plotting utility for LPERFECT flood depth outputs.
+A robust, workflow-friendly plotting utility for LPERFECT flood outputs.
 
 What it does (in one go):
-- Loads an LPERFECT flood depth NetCDF (flood_depth(time, latitude, longitude)).
+- Loads an LPERFECT flood NetCDF (supports flood_depth, risk_index, inundation_mask, and max variants).
 - Loads a domain NetCDF containing a DEM (dem(latitude, longitude) or similar).
 - Checks grid alignment and orientation (monotonic lat/lon, extents).
 - Optionally regrids flood depth to the DEM grid (or vice versa) using xarray interpolation.
@@ -33,10 +33,33 @@ from typing import Optional, Tuple, Any, List
 import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
-from matplotlib.colors import LightSource
+from matplotlib.colors import LightSource, BoundaryNorm, ListedColormap
 import matplotlib.patheffects as pe
 
 LOG = logging.getLogger("plot_flood_depth")
+
+PLOT_VARIABLES = {
+    "flood_depth": {
+        "label": "Flood depth (m)",
+        "mask_non_positive": True,
+    },
+    "flood_depth_max": {
+        "label": "Max flood depth (m)",
+        "mask_non_positive": True,
+    },
+    "inundation_mask": {
+        "label": "Inundation mask",
+        "mask_non_positive": False,
+    },
+    "inundation_mask_max": {
+        "label": "Max inundation mask",
+        "mask_non_positive": False,
+    },
+    "risk_index": {
+        "label": "Risk index",
+        "mask_non_positive": False,
+    },
+}
 
 
 # -----------------------------
@@ -173,6 +196,22 @@ def _pick_label_column(gdf, requested: Optional[str]) -> Optional[str]:
     return None
 
 
+def _risk_index_colormap() -> Tuple[ListedColormap, BoundaryNorm, List[float], List[str]]:
+    """Return a discrete colormap and labels for the risk_index variable."""
+    colors = ["#2ca25f", "#ffffb2", "#fe9929", "#e31a1c"]
+    cmap = ListedColormap(colors, name="risk_index")
+    bounds = [0.0, 0.25, 0.5, 0.75, 1.0]
+    norm = BoundaryNorm(bounds, cmap.N)
+    ticks = [0.125, 0.375, 0.625, 0.875]
+    labels = [
+        "Very Low Risk / No Danger",
+        "Low Risk",
+        "Medium Risk / Moderate Danger",
+        "High Risk / High Danger",
+    ]
+    return cmap, norm, ticks, labels
+
+
 # -----------------------------
 # Regridding
 # -----------------------------
@@ -240,6 +279,9 @@ def plot_one(
     vmax_percentile: Optional[float],
     threshold: Optional[float],
     log_scale: bool,
+    mask_non_positive: bool,
+    colorbar_label: str,
+    risk_index_style: bool,
     hillshade_azdeg: float,
     hillshade_altdeg: float,
     hillshade_vert_exag: float,
@@ -258,7 +300,8 @@ def plot_one(
         flood = flood.where(flood > threshold)
 
     # Always hide non-positive flood depths (transparent).
-    flood = flood.where(flood > 0)
+    if mask_non_positive:
+        flood = flood.where(flood > 0)
 
     flood_np = np.asarray(flood.values, dtype=float)
 
@@ -294,11 +337,41 @@ def plot_one(
     if log_scale:
         from matplotlib.colors import LogNorm
         norm = LogNorm(vmin=max(vmin, 1e-6), vmax=vmax)
-        cs = ax.pcolormesh(flood[lon_name], flood[lat_name], flood, cmap=cmap_flood, shading="auto", alpha=flood_alpha, norm=norm)
-        cbar = fig.colorbar(cs, ax=ax, label="Flood depth (m) [log]")
+        cs = ax.pcolormesh(
+            flood[lon_name],
+            flood[lat_name],
+            flood,
+            cmap=cmap_flood,
+            shading="auto",
+            alpha=flood_alpha,
+            norm=norm,
+        )
+        cbar = fig.colorbar(cs, ax=ax, label=f"{colorbar_label} [log]")
+    elif risk_index_style:
+        cmap, norm, ticks, labels = _risk_index_colormap()
+        cs = ax.pcolormesh(
+            flood[lon_name],
+            flood[lat_name],
+            flood,
+            cmap=cmap,
+            shading="auto",
+            alpha=flood_alpha,
+            norm=norm,
+        )
+        cbar = fig.colorbar(cs, ax=ax, label=colorbar_label, ticks=ticks)
+        cbar.ax.set_yticklabels(labels)
     else:
-        cs = ax.pcolormesh(flood[lon_name], flood[lat_name], flood, cmap=cmap_flood, shading="auto", alpha=flood_alpha, vmin=vmin, vmax=vmax)
-        cbar = fig.colorbar(cs, ax=ax, label="Flood depth (m)")
+        cs = ax.pcolormesh(
+            flood[lon_name],
+            flood[lat_name],
+            flood,
+            cmap=cmap_flood,
+            shading="auto",
+            alpha=flood_alpha,
+            vmin=vmin,
+            vmax=vmax,
+        )
+        cbar = fig.colorbar(cs, ax=ax, label=colorbar_label)
 
     if overlay_vectors:
         try:
@@ -347,7 +420,7 @@ def plot_one(
 # -----------------------------
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Plot LPERFECT flood depth over DEM hillshade.")
+    ap = argparse.ArgumentParser(description="Plot LPERFECT flood outputs over DEM hillshade.")
     ap.add_argument("--flood", required=True, help="LPERFECT flood depth NetCDF path.")
     ap.add_argument("--domain", required=True, help="Domain NetCDF path containing DEM.")
     ap.add_argument("--out", default=None, help="Output PNG path. If omitted, show interactive window.")
@@ -355,7 +428,19 @@ def main() -> int:
     ap.add_argument("--all-times", action="store_true", help="Render one PNG per time index.")
     ap.add_argument("--time-index", type=int, default=0, help="Time index (when not using --all-times).")
 
-    ap.add_argument("--flood-var", default="flood_depth", help="Flood depth variable name.")
+    ap.add_argument(
+        "--plot-var",
+        dest="flood_var",
+        choices=sorted(PLOT_VARIABLES.keys()),
+        default="flood_depth",
+        help="Variable to plot from the flood NetCDF.",
+    )
+    ap.add_argument(
+        "--flood-var",
+        dest="flood_var",
+        choices=sorted(PLOT_VARIABLES.keys()),
+        help="Alias for --plot-var.",
+    )
     ap.add_argument("--dem-var", default="dem", help="DEM variable name.")
     ap.add_argument("--lat-name", default=None, help="Latitude coord name (auto if omitted).")
     ap.add_argument("--lon-name", default=None, help="Longitude coord name (auto if omitted).")
@@ -364,12 +449,12 @@ def main() -> int:
                     help="Align grids via interpolation. Default: flood_to_dem.")
 
     ap.add_argument("--title", default=None, help="Custom plot title.")
-    ap.add_argument("--cmap-flood", default="Blues", help="Colormap for flood depth.")
+    ap.add_argument("--cmap-flood", default="Blues", help="Colormap for continuous variables.")
     ap.add_argument("--alpha", type=float, default=0.7, help="Flood overlay alpha (0..1).")
-    ap.add_argument("--vmin", type=float, default=0.0, help="Linear min flood depth.")
-    ap.add_argument("--vmax", type=float, default=None, help="Linear max flood depth.")
+    ap.add_argument("--vmin", type=float, default=0.0, help="Linear min value.")
+    ap.add_argument("--vmax", type=float, default=None, help="Linear max value.")
     ap.add_argument("--vmax-percentile", type=float, default=99.5, help="Percentile vmax if --vmax not set.")
-    ap.add_argument("--threshold", type=float, default=None, help="Mask flood depth <= threshold (m).")
+    ap.add_argument("--threshold", type=float, default=None, help="Mask values <= threshold.")
     ap.add_argument("--log-scale", action="store_true", help="Use log scaling for flood depth colors.")
 
     ap.add_argument("--azdeg", type=float, default=315.0, help="Hillshade azimuth (deg).")
@@ -403,7 +488,8 @@ def main() -> int:
     LOG.info("Opening domain dataset: %s", args.domain)
     domain_ds = xr.open_dataset(args.domain)
 
-    flood_var = _pick_var(flood_ds, args.flood_var, ["flood_depth", "water_depth", "depth"])
+    flood_fallback = ["flood_depth", "water_depth", "depth"] if args.flood_var == "flood_depth" else []
+    flood_var = _pick_var(flood_ds, args.flood_var, flood_fallback)
     dem_var = _pick_var(domain_ds, args.dem_var, ["dem", "elevation", "h", "topography"])
 
     flood_lat = args.lat_name or _infer_coord_name(flood_ds, ["latitude", "lat", "y"])
@@ -452,7 +538,7 @@ def main() -> int:
 
     def make_title(ti: int) -> str:
         time_label = _format_time_value(time_coord_values[ti]) if time_dim and time_coord_values is not None else None
-        base_title = cli_title or flood_title_attr or "LPERFECT flood depth"
+        base_title = cli_title or flood_title_attr or f"LPERFECT {args.flood_var.replace('_', ' ')}"
         title_parts = [base_title]
         if time_dim:
             title_parts.append(time_label or f"time index {ti}")
@@ -473,6 +559,30 @@ def main() -> int:
             indices = list(range(time_size))
     else:
         indices = [args.time_index]
+
+    variable_label = PLOT_VARIABLES[args.flood_var]["label"]
+    mask_non_positive = PLOT_VARIABLES[args.flood_var]["mask_non_positive"]
+    risk_index_style = args.flood_var == "risk_index"
+    log_scale = args.log_scale
+    vmax_percentile = args.vmax_percentile
+    vmin = args.vmin
+    vmax = args.vmax
+    cmap_flood = args.cmap_flood
+
+    if args.flood_var in {"inundation_mask", "inundation_mask_max"}:
+        vmin = 0.0
+        vmax = 1.0
+        vmax_percentile = None
+        log_scale = False
+
+    if risk_index_style:
+        vmin = 0.0
+        vmax = 1.0
+        vmax_percentile = None
+        log_scale = False
+
+    if args.log_scale and not log_scale:
+        LOG.warning("Log scale is only supported for flood depth variables; disabling log scale.")
 
     for ti in indices:
         if time_dim:
@@ -501,7 +611,7 @@ def main() -> int:
         )
 
         if args.all_times:
-            out_png = str(Path(args.out_dir) / f"flood_depth_t{ti:03d}.png")
+            out_png = str(Path(args.out_dir) / f"{args.flood_var}_t{ti:03d}.png")
         else:
             out_png = args.out
 
@@ -521,13 +631,16 @@ def main() -> int:
             lon_name=lon_name,
             title=make_title(ti),
             out_png=out_png,
-            cmap_flood=args.cmap_flood,
+            cmap_flood=cmap_flood,
             flood_alpha=args.alpha,
-            vmin=args.vmin,
-            vmax=args.vmax,
-            vmax_percentile=args.vmax_percentile,
+            vmin=vmin,
+            vmax=vmax,
+            vmax_percentile=vmax_percentile,
             threshold=args.threshold,
-            log_scale=args.log_scale,
+            log_scale=log_scale,
+            mask_non_positive=mask_non_positive,
+            colorbar_label=variable_label,
+            risk_index_style=risk_index_style,
             hillshade_azdeg=args.azdeg,
             hillshade_altdeg=args.altdeg,
             hillshade_vert_exag=args.vert_exag,

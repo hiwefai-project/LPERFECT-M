@@ -385,7 +385,7 @@ def convert_many(
         LOG.info("Resolved output path from %s to %s", out_path, resolved_out_path)
     LOG.info("Writing output: %s", resolved_out_path)
     merged.to_netcdf(resolved_out_path, encoding=encoding)
-    LOG.info("Done. Time steps written: %d", int(merged.dims.get("time", 0)))
+    LOG.info("Done. Time steps written: %d", int(merged.sizes.get("time", 0)))
 
 
 def main() -> int:
